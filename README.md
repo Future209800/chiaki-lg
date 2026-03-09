@@ -1,7 +1,7 @@
 # Chiaki-lg
 
 A native port of [chiaki-ng](https://github.com/streetpea/chiaki-ng) for LG webOS smart TVs.
-Streams PS4/PS5 Remote Play directly to your TV — no PC required at runtime.
+Streams PS4/PS5 Remote Play directly to your LG webOS TV.
 
 > **Tested on:** PS5 + webOS 5+. PS4 and webOS 4.x are supported in the code and should work, but have not been directly tested. Please open an issue if you encounter problems on those platforms.
 
@@ -15,6 +15,7 @@ Streams PS4/PS5 Remote Play directly to your TV — no PC required at runtime.
 - **1080p60 streaming** with H.265, H.265 HDR, or H.264 video codecs
 - **Hardware video decode** via webOS NDL (direct media pipeline) — video is decoded on a dedicated hardware plane below the app surface, not software-rendered
 - **Native Opus audio passthrough** — raw Opus packets fed directly to webOS NDL hardware decoder (no software decode step)
+- **Minimal built-in GUI** — a lightweight launcher screen on every launch lets you enter your PS5's IP, import your chiaki-ng config, adjust settings, and connect
 - **Full gamepad support** — DualSense, DualShock 4, Xbox Wireless Controller, and other Bluetooth/USB gamepads via direct evdev with exclusive grab (`EVIOCGRAB`)
 - **chiaki-ng settings import** — drop a `chiaki-ng-Default.ini` export file onto the TV to auto-import registration credentials (PS5 IP still required)
 - **Wake-on-LAN** — wakes PS5 from rest mode before connecting (UDP broadcast + unicast)
@@ -29,51 +30,34 @@ Streams PS4/PS5 Remote Play directly to your TV — no PC required at runtime.
 
 ## Quick start
 
-### Step 1 — Build
+### Step 1 — Download and install
+
+Download the latest `.ipk` from the [Releases](../../releases/latest) page, then install it on your TV:
 
 ```bash
-git clone https://github.com/streetpea/chiaki-ng.git
-git clone <this-repo-url> chiaki-lg
-cd chiaki-lg
-
-export TOOLCHAIN_DIR=~/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot
-./build-webos.sh ../chiaki-ng 2>&1 | tee build.log
+ares-setup-device   # one-time TV setup — TV must be on and in Developer Mode
+ares-install --device myTV chiaki-lg_*.ipk
 ```
 
-**Build machine requirements:** GCC, CMake ≥ 3.16, make, pkg-config, wget, git, Python 3 + pip, the [webOS native SDK toolchain](https://github.com/webosbrew/native-toolchain), and [ares-cli](https://github.com/webosbrew/ares-cli-rs).
-
-```bash
-pip3 install nanopb protobuf --break-system-packages
-```
-
-> **WSL users:** keep source files on a Linux filesystem (`~/`) rather than `/mnt/c/`. Always build via `./build-webos.sh` — not `cmake --build` directly.
+Or use [WebOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) if you prefer a GUI — it can install IPKs directly via drag and drop.
 
 **TV requirements:** LG webOS 4.x or 5+ TV with [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) installed and Developer Mode enabled.
 
-### Step 2 — Install
-
-```bash
-ares-setup-device   # one-time TV setup
-ares-install --device myTV org.homebrew.chiaki_*.ipk
-```
-
-Or use [WebOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) if you prefer a GUI.
-
-### Step 3 — Export your chiaki-ng registration
+### Step 2 — Export your chiaki-ng registration
 
 Chiaki-lg does not handle PS5 registration itself. You must have already registered with your PS5 using [chiaki-ng](https://github.com/streetpea/chiaki-ng) on Windows or Linux. This is a one-time step.
 
 **On Windows:**
 1. Open chiaki-ng
-2. Go to **File → Save Settings** (or locate the config directly at `%APPDATA%\Roaming\Chiaki\Chiaki.conf`)
-3. Copy that file and rename it `chiaki-ng-Default.ini`
+2. Go to **Settings → Config → Export Settings To File** (or locate the config directly at `%APPDATA%\Roaming\Chiaki\Chiaki.conf`)
+3. Copy that file and rename it `chiaki-ng-Default.ini` if needed
 
 **On Linux:**
 ```bash
 cp ~/.config/Chiaki/Chiaki.conf ~/chiaki-ng-Default.ini
 ```
 
-### Step 4 — Copy the file to the TV
+### Step 3 — Copy the file to the TV
 
 ```bash
 adb push chiaki-ng-Default.ini \
@@ -82,14 +66,14 @@ adb push chiaki-ng-Default.ini \
 
 Or transfer via [WebOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop)'s file browser.
 
-### Step 5 — Launch and connect
+### Step 4 — Launch and connect
 
 1. Launch **Chiaki-lg** on the TV
-2. Enter the local IP Address of the PS5 and click **Import Config**. The `.ini` file is renamed to `.imported` after a successful import so it won't be reprocessed
-3. Open **Settings** and change as needed
+2. Enter the local IP address of your PS5 and click **Import Config**. The `.ini` file is renamed to `.imported` after a successful import so it won't be reprocessed
+3. Open **Settings** and change anything as needed
 4. Select **Connect** — streaming starts immediately
 
-> The `.ini` file does not contain your PS5's IP address. You must enter it manually in Settings.
+> The `.ini` file does not contain your PS5's IP address. You must enter it manually before importing.
 
 ---
 
@@ -219,9 +203,6 @@ Ensure the file is named exactly `chiaki-ng-Default.ini` and placed in:
 **App crashes on launch**
 Usually a malformed `config.json`. Check `/tmp/chiaki.log`. Delete the config file to let the app recreate defaults, then repeat the import.
 
-**Build fails: "cannot find -lchiaki"** or **"Syntax error: ( unexpected"**
-You ran `cmake --build` directly. Always use `./build-webos.sh`.
-
 ---
 
 ## Architecture
@@ -241,6 +222,46 @@ Gamepad input uses direct Linux evdev reads with `EVIOCGRAB` for exclusive devic
 ### webOS version auto-detection
 
 At startup, the app reads `/var/run/nyx/os_info.json` (present on all webOS devices) to determine the major webOS version, then selects `ndl-webos5` (webOS 5+) or `ndl-webos4` (webOS 4.x). If that file is unreadable it falls back to probing for `libndl-directmedia2.so` on disk. The result is logged as `[AUTO]` in `/tmp/chiaki.log`.
+
+---
+
+## Building from source
+
+Most users should download the IPK from the [Releases](../../releases/latest) page. Build from source only if you want to make code changes or the pre-built IPK doesn't work for your TV.
+
+### Requirements
+
+- Linux or WSL2 build machine
+- GCC, CMake ≥ 3.16, make, pkg-config, wget, git, Python 3 + pip
+- [webOS native SDK toolchain](https://github.com/webosbrew/native-toolchain) — extract and run `relocate-sdk.sh`
+- [ares-cli](https://github.com/webosbrew/ares-cli-rs) in PATH
+
+```bash
+pip3 install nanopb protobuf --break-system-packages
+```
+
+> **WSL users:** keep source files on a Linux filesystem (`~/`) rather than `/mnt/c/`. Always build via `./build-webos.sh` — not `cmake --build` directly.
+
+### Build
+
+```bash
+git clone https://github.com/streetpea/chiaki-ng.git
+git clone <this-repo-url> chiaki-lg
+cd chiaki-lg
+
+export TOOLCHAIN_DIR=~/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot
+./build-webos.sh ../chiaki-ng 2>&1 | tee build.log
+```
+
+The script cross-compiles all dependencies (OpenSSL, Opus, FFmpeg, json-c, miniupnpc, cURL, GF-Complete, Jerasure, SS4S), patches chiaki-ng sources for webOS glibc compatibility, pre-generates nanopb protobuf sources, builds the binary, and packages an `.ipk` via `ares-package`. Dependencies are cached in `/tmp/webos-staging` and skipped on subsequent runs.
+
+The IPK is output to `build-webos/*.ipk`.
+
+### Common build errors
+
+**"cannot find -lchiaki"** or **"Syntax error: ( unexpected"** — You ran `cmake --build` directly. Always use `./build-webos.sh`.
+
+**"nanopb_generator.py not found"** — Run `pip3 install nanopb --break-system-packages`.
 
 ---
 

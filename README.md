@@ -1,7 +1,11 @@
-# chiaki-lg
+# Chiaki-lg
 
 A native port of [chiaki-ng](https://github.com/streetpea/chiaki-ng) for LG webOS smart TVs.
-Streams PS4/PS5 Remote Play directly to your TV.
+Streams PS4/PS5 Remote Play directly to your TV — no PC required at runtime.
+
+> **Tested on:** PS5 + webOS 5+. PS4 and webOS 4.x are supported in the code and should work, but have not been directly tested. Please open an issue if you encounter problems on those platforms.
+
+> **AI disclosure:** This project was developed with assistance from [Claude.ai](https://claude.ai), [ChatGPT](https://chat.openai.com), and [Google Gemini](https://gemini.google.com). All generated code was reviewed, tested, and integrated by the project author.
 
 ---
 
@@ -18,176 +22,74 @@ Streams PS4/PS5 Remote Play directly to your TV.
 - **Sleep-on-exit** — sends PS5 to rest mode when you quit the app
 - **Auto-reconnect** — retries on transient network errors; exits cleanly on deliberate disconnects
 - **Stats overlay** — real-time bitrate, FPS, codec, and latency display toggled with the TV remote UP button
-- **Two-tier logging** — `app_log_always()` for critical diagnostics (always written), `app_log()` for verbose chatter (gated by `log_level`)
+- **webOS version auto-detection** — automatically selects the correct NDL backend (`ndl-webos5` or `ndl-webos4`) at runtime
+- **Two-tier logging** — critical diagnostics always written; verbose chatter gated by `log_level`
 
 ---
 
-## Architecture
+## Quick start
 
-The app is a single native C binary (`chiaki-webos`) that links against chiaki-ng's C library for the PS Remote Play protocol and uses the [SS4S](https://github.com/aspect-apps/ss4s) abstraction layer (with the `ndl-webos5` backend) for hardware-accelerated video and audio output on webOS.
-
-### Video pipeline
-
-chiaki-lg decodes the Remote Play stream and delivers H.264/H.265 NAL units via a callback. The app feeds these directly to `SS4S_PlayerVideoFeed()` which routes them to webOS NDL's hardware video decoder. NDL renders video on a dedicated hardware plane *below* the app's OpenGL surface. The app's EGL surface is configured with an 8-bit alpha channel and cleared to transparent each frame so the video plane shows through. The SDL/GL surface is only used for UI overlays (loading screen, stats).
-
-### Audio pipeline
-
-chiaki-lg delivers raw Opus-encoded packets via an audio callback. The app feeds these directly to `SS4S_PlayerAudioFeed()` with codec `SS4S_AUDIO_OPUS`. webOS NDL has native hardware Opus decoding — there is no software decode step.
-
-### Input pipeline
-
-Gamepad input uses direct Linux evdev reads with `EVIOCGRAB` for exclusive device access. This prevents webOS's `hidd` daemon from intercepting gamepad buttons (which would otherwise remap B→Back, A→OK, Guide→Home at the system level). The evdev reader runs in a dedicated thread and pushes `ChiakiControllerState` updates directly to the chiaki session, bypassing SDL's joystick subsystem entirely.
-
-The TV remote is **not** mapped to PS5 controller inputs. It serves only three functions during streaming:
-
-| TV Remote Button | Action |
-|---|---|
-| **Up** | Toggle stats overlay |
-| **Back** | Exit the app |
-| **Home** | Exit the app (SDL_QUIT) |
-
-Volume is handled by the webOS system layer and works normally.
-
-### PSN cloud wakeup
-
-When a `psn_refresh_token` is configured, the app performs a multi-step PSN API sequence before falling back to UDP wakeup:
-
-1. Refresh the OAuth2 access token via Sony's auth endpoint
-2. Query the PSN device list to find the PS5's device UID (duid)
-3. Create a Remote Play session on PSN's session manager (triggers a push notification to the PS5)
-4. Send a wakeup command via the `cloudAssistedNavigation` commands endpoint (delivers an SQS message to the PS5)
-5. Clean up the session
-
-If any step fails, the app falls back to standard UDP wakeup packets. All PSN API calls use direct libcurl with SSL verification disabled (webOS lacks the CA bundle paths that chiaki-ng's internal holepunch library expects).
-
----
-
-## Source files
-
-| File | Purpose |
-|---|---|
-| `main.c` | Entry point, session lifecycle, wakeup (UDP + PSN cloud), reconnect logic, SDL event loop, stats overlay integration |
-| `config.c` / `config.h` | JSON config loader (`json-c`), default config generation |
-| `config_import.c` / `config_import.h` | chiaki-ng Qt INI settings import (parses `@ByteArray()` format) |
-| `video.c` / `video.h` | Video callback → SS4S/NDL feed, codec negotiation, stats counters |
-| `audio.c` / `audio.h` | Audio callback → SS4S/NDL Opus feed, stats counters |
-| `input.c` / `input.h` | Evdev gamepad reader thread with `EVIOCGRAB`, axis normalization |
-| `ui.c` / `ui.h` | Registration UI (on-screen keyboard, PIN entry), loading screen, stats overlay renderer |
-| `stats.c` / `stats.h` | Thread-safe stream statistics counters and overlay state machine |
-| `app_log.h` | Shared logging API (`app_log` / `app_log_always`) |
-| `NDL_directmedia.h` | webOS NDL API declarations for direct video buffer queries |
-| `CMakeLists.txt` | Build system |
-| `build-webos.sh` | One-shot cross-compile script (dependencies + app + IPK packaging) |
-| `appinfo.json` | webOS app metadata (ID: `org.homebrew.chiaki`) |
-| `config.json` | Runtime config (deployed to TV) |
-| `config_json.example` | Annotated config template |
-
----
-
-## Prerequisites
-
-### Build machine (Linux or WSL2)
-
-- GCC, CMake ≥ 3.16, make, pkg-config, wget, git
-- Python 3 with pip
-- [webOS native SDK / toolchain](https://github.com/webosbrew/native-toolchain) extracted and `relocate-sdk.sh` run
-- [ares-cli](https://github.com/webosbrew/ares-cli-rs) in PATH (`ares-package`, `ares-install`, `ares-setup-device`)
-- `nanopb` and `protobuf` Python packages:
-  ```bash
-  pip3 install nanopb protobuf --break-system-packages
-  ```
-
-> **WSL users:** keep build and source files on a Linux filesystem (e.g. `~/`) rather than `/mnt/c/`. The build script works around most WSL/NTFS issues, but git operations and timestamps are more reliable on ext4.
-
-### TV
-
-- LG webOS TV with [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) installed
-- Developer Mode enabled via Homebrew Channel
-
----
-
-## Building
-
-### 1. Clone both repos side by side
+### Step 1 — Build
 
 ```bash
 git clone https://github.com/streetpea/chiaki-ng.git
-git clone <this-repo-url> chiaki-webos-build
-cd chiaki-webos-build
-```
+git clone <this-repo-url> chiaki-lg
+cd chiaki-lg
 
-### 2. Set your toolchain path
-
-```bash
 export TOOLCHAIN_DIR=~/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot
-```
-
-### 3. Run the build script
-
-```bash
 ./build-webos.sh ../chiaki-ng 2>&1 | tee build.log
 ```
 
-The script will:
-1. Source the webOS SDK environment
-2. Cross-compile all dependencies for ARMv7a (OpenSSL, Opus, FFmpeg, json-c, miniupnpc, cURL with WebSocket support, GF-Complete, Jerasure, SS4S)
-3. Patch chiaki-ng sources for webOS glibc compatibility
-4. Pre-generate nanopb protobuf sources
-5. Build `chiaki-webos`
-6. Package into an `.ipk` via `ares-package`
-
-Dependencies are cached in `/tmp/webos-staging`; subsequent builds skip them.
-
-> **Important:** Always build via `./build-webos.sh`, not `cmake --build` directly. The script performs essential pre-build steps that cmake cannot handle in a WSL environment.
-
----
-
-## Installation
+**Build machine requirements:** GCC, CMake ≥ 3.16, make, pkg-config, wget, git, Python 3 + pip, the [webOS native SDK toolchain](https://github.com/webosbrew/native-toolchain), and [ares-cli](https://github.com/webosbrew/ares-cli-rs).
 
 ```bash
-# Add your TV (one-time — TV must be on and in developer mode)
-ares-setup-device
+pip3 install nanopb protobuf --break-system-packages
+```
 
-# Install the IPK
+> **WSL users:** keep source files on a Linux filesystem (`~/`) rather than `/mnt/c/`. Always build via `./build-webos.sh` — not `cmake --build` directly.
+
+**TV requirements:** LG webOS 4.x or 5+ TV with [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) installed and Developer Mode enabled.
+
+### Step 2 — Install
+
+```bash
+ares-setup-device   # one-time TV setup
 ares-install --device myTV org.homebrew.chiaki_*.ipk
 ```
 
-Or use WebOS Dev Manager https://github.com/webosbrew/dev-manager-desktop
+Or use [WebOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) if you prefer a GUI.
 
----
+### Step 3 — Export your chiaki-ng registration
 
-## First-run: registration
+Chiaki-lg does not handle PS5 registration itself. You must have already registered with your PS5 using [chiaki-ng](https://github.com/streetpea/chiaki-ng) on Windows or Linux. This is a one-time step.
 
-On first launch (or when registration keys are missing from `config.json`), the built-in UI walks you through setup:
+**On Windows:**
+1. Open chiaki-ng
+2. Go to **File → Save Settings** (or locate the config directly at `%APPDATA%\Roaming\Chiaki\Chiaki.conf`)
+3. Copy that file and rename it `chiaki-ng-Default.ini`
 
-1. **IP address screen** — enter your PS5's local IP using the on-screen keyboard
-2. **PSN Account ID screen** — enter your numeric PSN Account ID (see below)
-3. On your PS5, go to **Settings → System → Remote Play → Link Device** — an 8-digit PIN appears
-4. **PIN entry screen** — enter the PIN on the TV
-5. The app registers with your PS5, saves keys to `config.json`, and streaming starts immediately
-
-On subsequent launches the app reads saved keys and connects directly.
-
-### Getting your PSN Account ID
-
+**On Linux:**
 ```bash
-# In the chiaki-ng directory on your PC:
-python3 scripts/psn-account-id.py
+cp ~/.config/Chiaki/Chiaki.conf ~/chiaki-ng-Default.ini
 ```
 
-This opens a PSN browser login and prints a numeric ID like `7309513963409468843`. Enter it during registration.
+### Step 4 — Copy the file to the TV
 
-### Importing from an existing chiaki-ng installation
+```bash
+adb push chiaki-ng-Default.ini \
+  /media/developer/apps/usr/palm/applications/org.homebrew.chiaki/chiaki-ng-Default.ini
+```
 
-Instead of registering through the TV UI, you can export your chiaki-ng config:
+Or transfer via [WebOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop)'s file browser.
 
-**Option A: INI import** — Copy `Chiaki.conf` (from `%APPDATA%\Roaming\Chiaki\` on Windows or `~/.config/Chiaki/` on Linux) to the TV as `chiaki-ng-Default.ini` in the app directory. The app auto-imports registration credentials on next launch.
+### Step 5 — Launch and connect
 
-**Option B: Manual config** — Copy these fields from `Chiaki.conf` into `config.json`:
-- `server/[MAC]/AccountId` → `psn_account_id` (base64)
-- `server/[MAC]/RegistKey` → `registered_key` (base64)
-- `server/[MAC]/RPKey` → `rp_key` (base64)
-- `server/[MAC]/RPKeyType` → `rp_key_type` (integer)
+1. Launch **Chiaki-lg** on the TV
+2. Enter the local IP Address of the PS5 and click **Import Config**. The `.ini` file is renamed to `.imported` after a successful import so it won't be reprocessed
+3. Open **Settings** and change as needed
+4. Select **Connect** — streaming starts immediately
+
+> The `.ini` file does not contain your PS5's IP address. You must enter it manually in Settings.
 
 ---
 
@@ -197,6 +99,8 @@ Config file location on the TV:
 ```
 /media/developer/apps/usr/palm/applications/org.homebrew.chiaki/config.json
 ```
+
+Most settings are managed through the in-app Settings screen. You can also edit the file directly via SSH or WebOS Dev Manager.
 
 ### Example config
 
@@ -223,16 +127,16 @@ Config file location on the TV:
 }
 ```
 
-### Config fields
+### Config reference
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `host` | string | `""` | PS5/PS4 local IP address |
 | `ps5` | bool | `true` | `true` for PS5, `false` for PS4 |
-| `psn_account_id` | string | `""` | PSN account ID (base64) — written by registration UI |
-| `registered_key` | string | `""` | Registration key (base64) — written by registration UI |
-| `rp_key` | string | `""` | Remote Play key (base64) — written by registration UI |
-| `rp_key_type` | int | `0` | RP key type — written by registration UI |
+| `psn_account_id` | string | `""` | PSN account ID (base64) — written by import |
+| `registered_key` | string | `""` | Registration key (base64) — written by import |
+| `rp_key` | string | `""` | Remote Play key (base64) — written by import |
+| `rp_key_type` | int | `0` | RP key type — written by import |
 | `video_width` | int | `1920` | Stream width |
 | `video_height` | int | `1080` | Stream height |
 | `video_fps` | int | `60` | Stream frame rate |
@@ -240,11 +144,21 @@ Config file location on the TV:
 | `video_codec` | string | `"h265"` | `"h265"`, `"h265_hdr"`, or `"h264"` (PS4 always uses H.264) |
 | `audio_volume` | int | `100` | Audio volume (0–100) |
 | `wakeup` | bool | `false` | Send wakeup packets before connecting |
-| `ps5_mac` | string | `""` | PS5 MAC address (used for WoL) |
+| `ps5_mac` | string | `""` | PS5 MAC address (used for Wake-on-LAN) |
 | `wakeup_delay_ms` | int | `60000` | Max time (ms) to wait for PS5 to wake |
 | `sleep_on_exit` | bool | `false` | Send PS5 to rest mode on app exit |
+| `ss4s_module` | string | `"auto"` | SS4S backend. `"auto"` detects webOS version at startup and selects `ndl-webos5` (webOS 5+) or `ndl-webos4` (webOS 4.x) automatically. Override only if auto-detection fails. |
 | `log_level` | string | `"warning"` | `"off"`, `"error"`, `"warning"`, `"info"`, `"verbose"`, `"debug"` |
-| `psn_refresh_token` | string | `""` | PSN OAuth2 refresh token for cloud wakeup (optional, from chiaki-ng Windows config) |
+| `psn_refresh_token` | string | `""` | PSN OAuth2 refresh token for cloud wakeup (optional — see below) |
+
+### PSN cloud wakeup (optional)
+
+If your PS5 ignores local UDP wakeup packets, you can enable PSN cloud wakeup. Copy the `psn_refresh_token` value from your chiaki-ng config:
+
+- **Windows:** `%APPDATA%\Roaming\Chiaki\Chiaki.conf` → field `psn_refresh_token` under `[General]`
+- **Linux:** `~/.config/Chiaki/Chiaki.conf` → same field
+
+Paste the value (beginning with `v3.`) into `psn_refresh_token` in `config.json`. The app uses Sony's push notification service as the primary wakeup method with local UDP as fallback. The token is valid for approximately 60 days. Also confirm that **PS5 Settings → System → Power Saving → Features Available in Rest Mode → Enable Turning On PS5 from Network** is enabled.
 
 ---
 
@@ -252,27 +166,32 @@ Config file location on the TV:
 
 Connect a gamepad via Bluetooth or USB. Supported controllers include DualSense, DualShock 4, Xbox Wireless Controller, and most HID-compliant gamepads.
 
-The app uses direct evdev access with `EVIOCGRAB` to take exclusive control of the gamepad at the kernel level. This prevents webOS from intercepting buttons (B→Back, A→OK, Guide→Home) and ensures all inputs reach the PS5 unmodified.
+The app uses direct evdev access with `EVIOCGRAB` to take exclusive control of the gamepad at the kernel level, preventing webOS from intercepting buttons (B→Back, A→OK, Guide→Home).
 
-Axis mapping handles both standard HID layouts (DualSense/DualShock) and the Xbox Wireless Controller's webOS-specific axis assignments (ABS_Z/ABS_RZ for right stick, ABS_GAS/ABS_BRAKE for triggers).
+The TV remote is not forwarded to the PS5 as controller input. During streaming it serves only:
 
-The TV remote is not forwarded to the PS5 as controller input.
+| TV Remote Button | Action |
+|---|---|
+| **Up** (hold 0.5 s) | Toggle stats overlay |
+| **Up** (short press) | Forwarded to PS5 as D-pad up |
+| **Back** | Exit the app |
+| **Home** | Exit the app |
 
 ---
 
 ## Logs
 
-Logs are written to `/tmp/chiaki.log` on the TV.
+Logs are written to `/tmp/chiaki.log` on the TV (cleared on each launch).
 
 ```bash
 # Stream logs live
 ares-shell --device myTV -- "tail -f /tmp/chiaki.log"
 
-# Download the log file
+# Download the log
 ares-shell --device myTV -- "cat /tmp/chiaki.log" > chiaki.log
 ```
 
-Log verbosity is controlled by `log_level` in the config. Critical events (session lifecycle, wakeup status, errors) are always logged regardless of level.
+Set `"log_level": "info"` or `"debug"` in config.json for more detail. Critical events (session lifecycle, wakeup, errors) are always logged regardless of level.
 
 ---
 
@@ -282,47 +201,90 @@ Log verbosity is controlled by `log_level` in the config. Critical events (sessi
 Ensure Remote Play is enabled on your PS5 (Settings → System → Remote Play → Enable Remote Play). Verify the IP in `config.json` and that the TV and PS5 are on the same subnet.
 
 **Black screen with audio**
-Likely a codec or NDL issue. Check logs. Try `"video_codec": "h264"` as a fallback — H.264 has broader compatibility.
+Likely a codec or NDL issue. Check logs. Try `"video_codec": "h264"` as a fallback — H.264 has broader compatibility across NDL versions.
+
+**Black screen on webOS 4**
+Check `/tmp/chiaki.log` for the `[AUTO]` line confirming which SS4S module was selected. If auto-detection chose `ndl-webos5` incorrectly, set `"ss4s_module": "ndl-webos4"` in `config.json` manually.
 
 **PS5 won't wake from rest mode**
-Local UDP wakeup can be unreliable. To enable PSN cloud wakeup, copy the `psn_refresh_token` from your chiaki-ng Windows config (`%APPDATA%\Roaming\Chiaki\Chiaki.conf`, field `psn_refresh_token` under `[General]`) into `config.json`. The app will use Sony's push notification service as the primary wakeup method with UDP as fallback.
+Add your `psn_refresh_token` to `config.json` to enable PSN cloud wakeup (see above).
 
-**Registration fails / CE-110032-7 on PS5**
-The PSN Account ID is wrong. Use `python3 scripts/psn-account-id.py` from the chiaki-ng directory to get the correct numeric ID.
+**Gamepad buttons intercepted by webOS**
+Check logs for `EVIOCGRAB FAILED`. Disconnect and reconnect the controller after launching the app.
 
-**Registration fails / "invalid PIN"**
-The PIN expires in ~60 seconds. Open the TV's registration screen first, then go to PS5 Settings → Remote Play → Link Device, and enter the PIN promptly.
-
-**Gamepad buttons intercepted by webOS (B exits app, etc.)**
-The EVIOCGRAB failed — check logs for `EVIOCGRAB FAILED`. This can happen if another process already has the device open. Try disconnecting and reconnecting the controller after launching the app.
+**Import not working / file not found**
+Ensure the file is named exactly `chiaki-ng-Default.ini` and placed in:
+`/media/developer/apps/usr/palm/applications/org.homebrew.chiaki/`
 
 **App crashes on launch**
-Usually a malformed `config.json`. Check `/tmp/chiaki.log`. Delete the config file to let the app recreate defaults, then re-register.
+Usually a malformed `config.json`. Check `/tmp/chiaki.log`. Delete the config file to let the app recreate defaults, then repeat the import.
 
-**Build fails: "cannot find -lchiaki"**
+**Build fails: "cannot find -lchiaki"** or **"Syntax error: ( unexpected"**
 You ran `cmake --build` directly. Always use `./build-webos.sh`.
+
+---
+
+## Architecture
+
+### Video pipeline
+
+H.264/H.265 NAL units from the chiaki-ng callback are fed directly to `SS4S_PlayerVideoFeed()`, which routes them to webOS NDL's hardware video decoder. NDL renders on a hardware plane *below* the app's OpenGL surface. The EGL surface is configured with an 8-bit alpha channel and cleared to transparent each frame so the video plane shows through. The SDL/GL layer is only used for UI overlays.
+
+### Audio pipeline
+
+Raw Opus packets from the chiaki-ng audio callback are fed directly to `SS4S_PlayerAudioFeed()` with codec `SS4S_AUDIO_OPUS`. webOS NDL has native Opus hardware decoding — there is no software decode step.
+
+### Input pipeline
+
+Gamepad input uses direct Linux evdev reads with `EVIOCGRAB` for exclusive device access, bypassing SDL's joystick subsystem. The evdev reader runs in a dedicated thread and pushes `ChiakiControllerState` updates directly to the chiaki session.
+
+### webOS version auto-detection
+
+At startup, the app reads `/var/run/nyx/os_info.json` (present on all webOS devices) to determine the major webOS version, then selects `ndl-webos5` (webOS 5+) or `ndl-webos4` (webOS 4.x). If that file is unreadable it falls back to probing for `libndl-directmedia2.so` on disk. The result is logged as `[AUTO]` in `/tmp/chiaki.log`.
+
+---
+
+## Source files
+
+| File | Purpose |
+|---|---|
+| `main.c` | Entry point, session lifecycle, wakeup (UDP + PSN cloud), webOS version detection, SDL event loop |
+| `config.c` / `config.h` | JSON config loader, default config generation |
+| `config_import.c` / `config_import.h` | chiaki-ng INI settings import |
+| `video.c` / `video.h` | Video callback → SS4S/NDL feed, codec negotiation, stats counters |
+| `audio.c` / `audio.h` | Audio callback → SS4S/NDL Opus feed |
+| `input.c` / `input.h` | Evdev gamepad reader thread with `EVIOCGRAB` |
+| `ui.c` / `ui.h` | Launcher UI, settings screen, loading screen, stats overlay renderer |
+| `stats.c` / `stats.h` | Thread-safe stream statistics and overlay state |
+| `app_log.h` | Shared logging macros |
+| `NDL_directmedia.h` | webOS NDL API declarations |
+| `CMakeLists.txt` | Build system |
+| `build-webos.sh` | One-shot cross-compile + IPK packaging script |
+| `appinfo.json` | webOS app metadata |
+| `config.json` | Default config (deployed to TV, populated on first run) |
+| `config_json.example` | Annotated config template |
 
 ---
 
 ## Dependencies
 
-| Library | Version | Link type | Purpose |
+| Library | Version | Link | Purpose |
 |---|---|---|---|
 | chiaki-ng | main | static | PS Remote Play protocol |
-| SS4S | — | static | webOS NDL video/audio abstraction |
+| SS4S | — | dynamic | webOS NDL video/audio abstraction (ndl-webos4 + ndl-webos5) |
 | OpenSSL | 3.2.1 | static | TLS for PSN API, crypto for chiaki |
 | Opus | 1.4 | static | Audio codec (chiaki internal use) |
 | FFmpeg | 6.1.1 | static | H.264/H.265 codec support |
 | json-c | 0.17 | static | Config file parsing |
-| cURL | 8.7.1 | static | PSN API HTTP/WebSocket calls |
+| cURL | 8.7.1 | static | PSN API HTTP calls |
 | miniupnpc | 2.2.7 | static | UPnP (chiaki dependency) |
 | GF-Complete | master | static | Erasure coding (chiaki dependency) |
 | Jerasure | 2.0 | static | FEC (chiaki dependency) |
-| SDL2 | 2.30.x | dynamic | Window/GL surface, TV remote events |
+| SDL2 | 2.30.x | dynamic | Window/GL surface, TV remote input |
 | nanopb | 0.4.x | static | Protobuf (chiaki submodule) |
 
 ---
 
 ## License
 
-AGPL-3.0 — same as [chiaki-ng](https://github.com/streetpea/chiaki-ng).
+AGPL-3.0 — same as [chiaki-ng](https://github.com/streetpea/chiaki-ng), on which this project is based.

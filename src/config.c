@@ -46,10 +46,10 @@ static int config_write_defaults(const char *path)
         "  \"video_bitrate\": 15000,\n"
         "  \"video_codec\": \"h265\",\n"
         "  \"audio_volume\": 100,\n"
-        "  \"wakeup\": false,\n"
+        "  \"wakeup\": true,\n"
         "  \"ps5_mac\": \"\",\n"
         "  \"wakeup_delay_ms\": 60000,\n"
-        "  \"sleep_on_exit\": false,\n"
+        "  \"sleep_on_exit\": true,\n"
         "  \"log_level\": \"warning\",\n"
         "  \"psn_refresh_token\": \"\"\n"
         "}\n");
@@ -91,10 +91,10 @@ int config_load(AppConfig *cfg, const char *path)
     cfg->ps5              = json_get_bool(root, "ps5",              true);
     cfg->hw_decode        = json_get_bool(root, "hw_decode",        false);
     cfg->video_codec      = json_get_str(root,  "video_codec");
-    cfg->wakeup           = json_get_bool(root, "wakeup",           false);
+    cfg->wakeup           = json_get_bool(root, "wakeup",           true);
     cfg->ps5_mac          = json_get_str(root,  "ps5_mac");
     cfg->wakeup_delay_ms  = json_get_int(root,  "wakeup_delay_ms",  60000);
-    cfg->sleep_on_exit    = json_get_bool(root, "sleep_on_exit",    false);
+    cfg->sleep_on_exit    = json_get_bool(root, "sleep_on_exit",    true);
 
     // log_level: string or legacy bool
     {

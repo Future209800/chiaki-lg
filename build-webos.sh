@@ -331,6 +331,30 @@ build_jerasure() {
     echo "-- Jerasure built: ${#objects[@]} objects"
 }
 
+# ── libevent ──────────────────────────────────────────────────────────────────
+build_libevent() {
+    local ver="2.1.12-stable"
+    local src="/tmp/libevent-$ver"
+    [[ -f "$OUR_STAGING/lib/libevent.a" ]] && { echo "-- libevent: skip"; return; }
+    echo "-- Building libevent $ver"
+    if [[ ! -d "$src" ]]; then
+        wget -qO "/tmp/libevent-$ver.tar.gz" \
+            "https://github.com/libevent/libevent/releases/download/release-$ver/libevent-$ver.tar.gz"
+        tar xf "/tmp/libevent-$ver.tar.gz" -C /tmp
+    fi
+    local bdir="$src/build"; mkdir -p "$bdir"
+    cmake -B "$bdir" -S "$src" \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+        -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DEVENT__DISABLE_TESTS=ON \
+        -DEVENT__DISABLE_SAMPLES=ON \
+        -DEVENT__DISABLE_OPENSSL=ON \
+        -DEVENT__LIBRARY_TYPE=STATIC
+    cmake --build "$bdir" -j"$NJOBS"
+    cmake --install "$bdir"
+}
+
 build_openssl
 build_opus
 build_jsonc
@@ -338,6 +362,7 @@ build_miniupnpc
 build_curl
 build_gf_complete
 build_jerasure
+build_libevent
 
 # ── Clone ss4s ────────────────────────────────────────────────────────────────
 SS4S_DIR="$SCRIPT_DIR/third-party/ss4s"
@@ -529,7 +554,7 @@ endif()
 # and we overwrite their (sysroot-corrupted) INTERFACE_INCLUDE_DIRECTORIES.
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL cmake_language EVAL CODE [[
     # Fix sysroot-corrupted include dirs on PkgConfig imported targets
-    foreach(_t PkgConfig::json-c PkgConfig::MINIUPNPC PkgConfig::miniupnpc)
+    foreach(_t PkgConfig::json-c PkgConfig::MINIUPNPC PkgConfig::miniupnpc PkgConfig::libevent PkgConfig::LIBEVENT PkgConfig::libevent_core PkgConfig::libevent_pthreads)
         if(TARGET ${_t})
             set_property(TARGET ${_t} PROPERTY
                 INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include")

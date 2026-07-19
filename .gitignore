@@ -6,3 +6,6 @@ third-party/
 *.a
 *.log
 /tmp/
+dist/
+build.bat
+*docker*

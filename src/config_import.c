@@ -98,6 +98,20 @@ static int parse_qt_bytearray(const char *val, uint8_t *out, int max_out)
                 out[n++] = (uint8_t)strtol(hex, NULL, 16);
             } else if (*p == '0') {
                 out[n++] = 0x00; p++;
+            } else if (*p == 'a') {
+                out[n++] = 0x07; p++;
+            } else if (*p == 'b') {
+                out[n++] = 0x08; p++;
+            } else if (*p == 'f') {
+                out[n++] = 0x0C; p++;
+            } else if (*p == 'n') {
+                out[n++] = 0x0A; p++;
+            } else if (*p == 'r') {
+                out[n++] = 0x0D; p++;
+            } else if (*p == 't') {
+                out[n++] = 0x09; p++;
+            } else if (*p == 'v') {
+                out[n++] = 0x0B; p++;
             } else if (*p == '"') {
                 out[n++] = 0x22; p++;
             } else if (*p == '\\') {
@@ -435,7 +449,7 @@ ChiakiImportResult config_try_import_chiaki_ini(
         "    \"audio_volume\": 100,\n"
         "    \"wakeup\": %s,\n"
         "    \"ps5_mac\": \"%s\",\n"
-        "    \"wakeup_delay_ms\": 30000,\n"
+        "    \"wakeup_delay_ms\": 20000,\n"
         "    \"sleep_on_exit\": %s,\n"
         "    \"log_level\": \"warning\",\n"
         "    \"psn_refresh_token\": \"%s\",\n"

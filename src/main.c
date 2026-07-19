@@ -1263,14 +1263,38 @@ int main(int argc, char *argv[])
         app_log("[APP] Failed to decode rp_key\n");
         goto cleanup_session_ctx;
     }
-    uint8_t account_id_raw[8];
+    uint8_t account_id_raw[8] = {0};
     decoded_len = sizeof(account_id_raw);
-    if (chiaki_base64_decode(cfg.psn_account_id_b64,
-                             strlen(cfg.psn_account_id_b64),
-                             account_id_raw, &decoded_len) != CHIAKI_ERR_SUCCESS)
-    {
-        app_log("[APP] Failed to decode psn_account_id\n");
-        goto cleanup_session_ctx;
+
+    bool is_decimal = true;
+    size_t psn_len = cfg.psn_account_id_b64 ? strlen(cfg.psn_account_id_b64) : 0;
+    if (psn_len == 0) is_decimal = false;
+    for (size_t i = 0; i < psn_len; i++) {
+        if (cfg.psn_account_id_b64[i] < '0' || cfg.psn_account_id_b64[i] > '9') {
+            is_decimal = false;
+            break;
+        }
+    }
+    
+    if (is_decimal && psn_len > 12) {
+        uint64_t acc = strtoull(cfg.psn_account_id_b64, NULL, 10);
+        account_id_raw[0] = (acc >> 0)  & 0xFF;
+        account_id_raw[1] = (acc >> 8)  & 0xFF;
+        account_id_raw[2] = (acc >> 16) & 0xFF;
+        account_id_raw[3] = (acc >> 24) & 0xFF;
+        account_id_raw[4] = (acc >> 32) & 0xFF;
+        account_id_raw[5] = (acc >> 40) & 0xFF;
+        account_id_raw[6] = (acc >> 48) & 0xFF;
+        account_id_raw[7] = (acc >> 56) & 0xFF;
+        app_log("[PSN] Parsed numeric Account ID\n");
+    } else {
+        if (chiaki_base64_decode(cfg.psn_account_id_b64,
+                                 psn_len,
+                                 account_id_raw, &decoded_len) != CHIAKI_ERR_SUCCESS)
+        {
+            app_log("[APP] Failed to decode psn_account_id\n");
+            goto cleanup_session_ctx;
+        }
     }
     memcpy(&info.psn_account_id, account_id_raw, sizeof(info.psn_account_id));
 

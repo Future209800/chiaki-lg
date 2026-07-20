@@ -23,7 +23,6 @@ jobs:
 
       - name: Scarica e installa webOS NDK
         run: |
-          # Cerca e scarica in automatico l'ultimo NDK della community
           DOWNLOAD_URL=$(curl -s https://api.github.com/repos/webosbrew/meta-lg-webos-ndk/releases/latest | grep "browser_download_url.*\.sh" | cut -d '"' -f 4 | head -n 1)
           wget -q $DOWNLOAD_URL -O ndk-installer.sh
           chmod +x ndk-installer.sh
@@ -31,11 +30,10 @@ jobs:
 
       - name: Compila e Pacchetta
         run: |
-          # Carica le variabili dell'ambiente ARM e compila
           source /opt/webos-sdk/environment-setup-*
           mkdir build
           cd build
-          cmake ..
+          cmake .. -DCMAKE_SYSROOT=$OECORE_TARGET_SYSROOT -DOPENSSL_ROOT_DIR=$OECORE_TARGET_SYSROOT/usr -DOPENSSL_INCLUDE_DIR=$OECORE_TARGET_SYSROOT/usr/include
           make
           ares-package .
 

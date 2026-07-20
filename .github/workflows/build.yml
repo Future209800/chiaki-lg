@@ -1,0 +1,29 @@
+name: Build webOS IPK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ghcr.io/webosbrew/meta-lg-webos-ndk:latest
+
+    steps:
+      - name: Checkout del codice
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compilazione
+        run: |
+          mkdir build
+          cd build
+          cmake ..
+          make
+          ares-package .
+
+      - name: Salva il file .ipk
+        uses: actions/upload-artifact@v4
+        with:
+          name: chiaki-lg-ipk
+          path: build/*.ipk

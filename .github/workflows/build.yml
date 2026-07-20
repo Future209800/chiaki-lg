@@ -43,8 +43,9 @@ jobs:
         run: |
           source /opt/webos-sdk/environment-setup-*
           
-          # Crea il file pkg-config mancante per NDL_directmedia
           sudo mkdir -p $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig
+          
+          # Crea il file pkg-config mancante per NDL_directmedia
           cat <<EOF | sudo tee $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig/NDL_directmedia.pc > /dev/null
           prefix=/usr
           exec_prefix=\${prefix}
@@ -55,6 +56,20 @@ jobs:
           Description: LG webOS NDL DirectMedia library
           Version: 1.0.0
           Libs: -L\${libdir} -lNDL_directmedia
+          Cflags: -I\${includedir}
+          EOF
+          
+          # Crea il file pkg-config mancante per lgncopenapi
+          cat <<EOF | sudo tee $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig/lgncopenapi.pc > /dev/null
+          prefix=/usr
+          exec_prefix=\${prefix}
+          libdir=\${exec_prefix}/lib
+          includedir=\${prefix}/include
+          
+          Name: lgncopenapi
+          Description: LG webOS NC Open API library
+          Version: 1.0.0
+          Libs: -L\${libdir} -llgncopenapi
           Cflags: -I\${includedir}
           EOF
           

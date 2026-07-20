@@ -33,7 +33,7 @@ jobs:
           source /opt/webos-sdk/environment-setup-*
           mkdir build
           cd build
-          cmake .. -DCMAKE_SYSROOT=$OECORE_TARGET_SYSROOT -DOPENSSL_ROOT_DIR=$OECORE_TARGET_SYSROOT/usr -DOPENSSL_INCLUDE_DIR=$OECORE_TARGET_SYSROOT/usr/include
+          cmake .. -DCMAKE_SYSROOT=$OECORE_TARGET_SYSROOT -DOPENSSL_ROOT_DIR=$OECORE_TARGET_SYSROOT/usr -DOPENSSL_INCLUDE_DIR=$OECORE_TARGET_SYSROOT/usr/include -DOPENSSL_CRYPTO_LIBRARY=$OECORE_TARGET_SYSROOT/usr/lib/libcrypto.so -DOPENSSL_SSL_LIBRARY=$OECORE_TARGET_SYSROOT/usr/lib/libssl.so
           make
           ares-package .
 

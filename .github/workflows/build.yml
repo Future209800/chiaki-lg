@@ -15,11 +15,8 @@ jobs:
 
       - name: Scarica dipendenze esterne (chiaki-ng e ss4s)
         run: |
-          # Scarica chiaki-ng nella cartella superiore, esattamente dove se lo aspetta CMake
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
-          
-          # Torna nella cartella principale e forza il download di ss4s (se assente)
           cd $GITHUB_WORKSPACE
           git submodule update --init --recursive
           if [ ! -d "third-party/ss4s" ] || [ -z "$(ls -A third-party/ss4s)" ]; then
@@ -45,6 +42,22 @@ jobs:
       - name: Compila e Pacchetta
         run: |
           source /opt/webos-sdk/environment-setup-*
+          
+          # Crea il file pkg-config mancante per NDL_directmedia
+          sudo mkdir -p $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig
+          cat <<EOF | sudo tee $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig/NDL_directmedia.pc > /dev/null
+          prefix=/usr
+          exec_prefix=\${prefix}
+          libdir=\${exec_prefix}/lib
+          includedir=\${prefix}/include
+          
+          Name: NDL_directmedia
+          Description: LG webOS NDL DirectMedia library
+          Version: 1.0.0
+          Libs: -L\${libdir} -lNDL_directmedia
+          Cflags: -I\${includedir}
+          EOF
+          
           mkdir build
           cd build
           cmake .. -DCMAKE_SYSROOT=$OECORE_TARGET_SYSROOT -DOPENSSL_ROOT_DIR=$OECORE_TARGET_SYSROOT/usr -DOPENSSL_INCLUDE_DIR=$OECORE_TARGET_SYSROOT/usr/include -DOPENSSL_CRYPTO_LIBRARY=$OECORE_TARGET_SYSROOT/usr/lib/libcrypto.so -DOPENSSL_SSL_LIBRARY=$OECORE_TARGET_SYSROOT/usr/lib/libssl.so

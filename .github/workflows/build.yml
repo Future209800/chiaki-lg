@@ -13,6 +13,20 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Scarica dipendenze esterne (chiaki-ng e ss4s)
+        run: |
+          # Scarica chiaki-ng nella cartella superiore, esattamente dove se lo aspetta CMake
+          cd ..
+          git clone --recursive https://github.com/streetpea/chiaki-ng.git
+          
+          # Torna nella cartella principale e forza il download di ss4s (se assente)
+          cd $GITHUB_WORKSPACE
+          git submodule update --init --recursive
+          if [ ! -d "third-party/ss4s" ] || [ -z "$(ls -A third-party/ss4s)" ]; then
+            mkdir -p third-party
+            git clone https://github.com/mariotaku/ss4s.git third-party/ss4s
+          fi
+
       - name: Installa dipendenze base
         run: |
           sudo apt-get update

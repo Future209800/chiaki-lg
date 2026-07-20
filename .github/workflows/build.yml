@@ -5,8 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container: ghcr.io/webosbrew/meta-lg-webos-ndk:latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout del codice
@@ -14,8 +13,26 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Compilazione
+      - name: Installa dipendenze base
         run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake make pkg-config wget git python3 npm curl
+
+      - name: Installa ares-cli (LG Tools)
+        run: sudo npm install -g @webos-tools/cli
+
+      - name: Scarica e installa webOS NDK
+        run: |
+          # Cerca e scarica in automatico l'ultimo NDK della community
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/webosbrew/meta-lg-webos-ndk/releases/latest | grep "browser_download_url.*\.sh" | cut -d '"' -f 4 | head -n 1)
+          wget -q $DOWNLOAD_URL -O ndk-installer.sh
+          chmod +x ndk-installer.sh
+          ./ndk-installer.sh -y -d /opt/webos-sdk
+
+      - name: Compila e Pacchetta
+        run: |
+          # Carica le variabili dell'ambiente ARM e compila
+          source /opt/webos-sdk/environment-setup-*
           mkdir build
           cd build
           cmake ..

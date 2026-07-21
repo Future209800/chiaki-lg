@@ -45,7 +45,7 @@ jobs:
           
           sudo mkdir -p $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig
           
-          # Crea il file pkg-config mancante per NDL_directmedia
+          # Crea il file pkg-config per NDL_directmedia
           cat <<EOF | sudo tee $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig/NDL_directmedia.pc > /dev/null
           prefix=/usr
           exec_prefix=\${prefix}
@@ -59,7 +59,7 @@ jobs:
           Cflags: -I\${includedir}
           EOF
           
-          # Crea il file pkg-config mancante per lgncopenapi
+          # Crea il file pkg-config per lgncopenapi
           cat <<EOF | sudo tee $OECORE_TARGET_SYSROOT/usr/lib/pkgconfig/lgncopenapi.pc > /dev/null
           prefix=/usr
           exec_prefix=\${prefix}
@@ -73,6 +73,16 @@ jobs:
           Cflags: -I\${includedir}
           EOF
           
+          # Compila miniupnpc per la TV
+          git clone --depth 1 https://github.com/miniupnp/miniupnp.git
+          cd miniupnp/miniupnpc
+          mkdir build_arm && cd build_arm
+          cmake .. -DCMAKE_SYSROOT=$OECORE_TARGET_SYSROOT -DCMAKE_INSTALL_PREFIX=$OECORE_TARGET_SYSROOT/usr -DUPNPC_BUILD_SHARED=ON -DUPNPC_BUILD_TESTS=OFF -DUPNPC_BUILD_SAMPLE=OFF
+          make
+          sudo -E make install
+          cd ../../..
+          
+          # Compilazione finale di Chiaki
           mkdir build
           cd build
           cmake .. -DCMAKE_SYSROOT=$OECORE_TARGET_SYSROOT -DOPENSSL_ROOT_DIR=$OECORE_TARGET_SYSROOT/usr -DOPENSSL_INCLUDE_DIR=$OECORE_TARGET_SYSROOT/usr/include -DOPENSSL_CRYPTO_LIBRARY=$OECORE_TARGET_SYSROOT/usr/lib/libcrypto.so -DOPENSSL_SSL_LIBRARY=$OECORE_TARGET_SYSROOT/usr/lib/libssl.so

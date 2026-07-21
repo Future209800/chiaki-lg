@@ -27,7 +27,7 @@ jobs:
       - name: Installa dipendenze base
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake make pkg-config wget git python3 npm curl
+          sudo apt-get install -y cmake make pkg-config wget git python3 npm curl protobuf-compiler
 
       - name: Installa ares-cli (LG Tools)
         run: sudo npm install -g @webos-tools/cli

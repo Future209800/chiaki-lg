@@ -9,25 +9,33 @@ CHIAKI_NG_DIR="$(realpath "${1:-$SCRIPT_DIR/../chiaki-ng}")"
 BUILD_DIR="$SCRIPT_DIR/build-webos"
 OUR_STAGING="/tmp/webos-staging"
 
-# ── Validate toolchain ────────────────────────────────────────────────────────
-if [[ -z "${TOOLCHAIN_DIR:-}" ]]; then
-    echo "ERROR: Set TOOLCHAIN_DIR to your extracted webOS SDK root."
-    echo "  export TOOLCHAIN_DIR=~/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot"
+# ── Validate toolchain & Source Yocto environment ──────────────────────────
+export TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-/opt/webos-sdk}"
+if [[ ! -d "$TOOLCHAIN_DIR" ]]; then
+    echo "ERROR: TOOLCHAIN_DIR non trovata in $TOOLCHAIN_DIR"
     exit 1
 fi
 
-TOOLCHAIN_FILE="$TOOLCHAIN_DIR/share/buildroot/toolchainfile.cmake"
-if [[ ! -f "$TOOLCHAIN_FILE" ]]; then
-    echo "ERROR: toolchainfile.cmake not found at $TOOLCHAIN_FILE"
+ENV_SETUP=$(ls "$TOOLCHAIN_DIR"/environment-setup-* 2>/dev/null | head -n 1)
+if [[ -z "$ENV_SETUP" ]]; then
+    echo "ERROR: Script environment-setup non trovato in $TOOLCHAIN_DIR"
+    exit 1
+fi
+source "$ENV_SETUP"
+
+TOOLCHAIN_FILE=$(find "$TOOLCHAIN_DIR" -name "OEToolchainConfig.cmake" | head -n 1)
+if [[ -z "$TOOLCHAIN_FILE" ]]; then
+    echo "ERROR: OEToolchainConfig.cmake non trovato in $TOOLCHAIN_DIR"
     exit 1
 fi
 
-SYSROOT="$TOOLCHAIN_DIR/arm-webos-linux-gnueabi/sysroot"
+SYSROOT="${OECORE_TARGET_SYSROOT}"
+if [[ -z "$SYSROOT" || ! -d "$SYSROOT" ]]; then
+    echo "ERROR: SYSROOT non trovato o variabile OECORE_TARGET_SYSROOT non impostata."
+    exit 1
+fi
 
-# ── Source buildroot environment ──────────────────────────────────────────────
-source "$TOOLCHAIN_DIR/environment-setup"
 export STAGING_DIR="$OUR_STAGING"
-
 export PATH="/usr/bin:/usr/local/bin:$PATH"
 
 [[ -z "${CC:-}" ]]  && export CC="arm-webos-linux-gnueabi-gcc"
@@ -62,6 +70,7 @@ echo ""
 mkdir -p "$OUR_STAGING"
 mkdir -p "$BUILD_DIR"
 NJOBS=$(nproc)
+
 
 # ── OpenSSL ───────────────────────────────────────────────────────────────────
 build_openssl() {

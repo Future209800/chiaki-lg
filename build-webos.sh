@@ -555,7 +555,8 @@ set -x  # trace all commands from here so failures are visible
 rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
 
-# Svuotiamo il file CMake del modulo legacy per evitare il bug di sintassi
+# Creiamo la cartella se non esiste e azzeriamo il file CMake del modulo legacy
+mkdir -p "$1/third-party/ss4s/modules/webos/smp"
 echo "" > "$1/third-party/ss4s/modules/webos/smp/CMakeLists.txt"
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \

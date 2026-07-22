@@ -46,6 +46,9 @@ jobs:
 
       - name: Esecuzione script di compilazione autonomo
         run: |
+          # Svuotiamo brutalmente il file CMake del modulo legacy per evitare bug e file mancanti
+          echo "" > ../chiaki-ng/third-party/ss4s/modules/webos/smp/CMakeLists.txt
+          
           export TOOLCHAIN_DIR=/opt/webos-sdk
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng

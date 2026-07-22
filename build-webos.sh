@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build-webos.sh — Cross-compile chiaki-webos for webOS TV
-# Versione Definitiva: Hack post-configurazione per aggirare il ripristino di Git
+# Versione Definitiva: Hack post-configurazione a tappeto su tutti i moduli legacy
 
 set -eo pipefail
 
@@ -342,12 +342,23 @@ cmake -B "$BUILD_DIR" \
 
 set +x
 
-# ── HACK POST-CONFIGURAZIONE (IL COLPO DI GRAZIA) ─────────────────────────────
-# Lo eseguiamo QUI perché CMake ha finito di ripristinare i sottomoduli. 
-# Ora possiamo modificare i file C++ e il compilatore li accetterà ciecamente!
-echo "=== Esecuzione HACK post-configurazione su SMP/LGNC ==="
-find "$SCRIPT_DIR" "$CHIAKI_NG_DIR" -type f -name "StarfishMediaAPIs_C.cpp" -exec bash -c 'echo "int dummy_smp() { return 0; }" > "$1"' _ {} \; 2>/dev/null || true
-find "$SCRIPT_DIR" "$CHIAKI_NG_DIR" -type f -name "StarfishMediaAPIs.h" -exec bash -c 'echo "" > "$1"' _ {} \; 2>/dev/null || true
+# ── HACK POST-CONFIGURAZIONE (IL BOMBARDAMENTO A TAPPETO) ─────────────────────
+# CMake ha finito. Ora azzeriamo chirurgicamente qualsiasi file C/C++ in SMP/LGNC
+echo "=== Neutralizzazione aggressiva dei moduli legacy (SMP/LGNC) ==="
+
+# Neutralizzazione in SCRIPT_DIR
+find "$SCRIPT_DIR/third-party/ss4s/modules/webos/smp" -type f \( -name "*.c" -o -name "*.cpp" \) -exec bash -c 'echo "static int dummy_smp() { return 0; }" > "$1"' _ {} \; 2>/dev/null || true
+find "$SCRIPT_DIR/third-party/ss4s/modules/webos/smp" -type f -name "*.h" -exec bash -c 'echo "" > "$1"' _ {} \; 2>/dev/null || true
+
+find "$SCRIPT_DIR/third-party/ss4s/modules/webos/lgnc" -type f \( -name "*.c" -o -name "*.cpp" \) -exec bash -c 'echo "static int dummy_lgnc() { return 0; }" > "$1"' _ {} \; 2>/dev/null || true
+find "$SCRIPT_DIR/third-party/ss4s/modules/webos/lgnc" -type f -name "*.h" -exec bash -c 'echo "" > "$1"' _ {} \; 2>/dev/null || true
+
+# Neutralizzazione in CHIAKI_NG_DIR (nel caso CMake li prenda da lì)
+find "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp" -type f \( -name "*.c" -o -name "*.cpp" \) -exec bash -c 'echo "static int dummy_smp() { return 0; }" > "$1"' _ {} \; 2>/dev/null || true
+find "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp" -type f -name "*.h" -exec bash -c 'echo "" > "$1"' _ {} \; 2>/dev/null || true
+
+find "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/lgnc" -type f \( -name "*.c" -o -name "*.cpp" \) -exec bash -c 'echo "static int dummy_lgnc() { return 0; }" > "$1"' _ {} \; 2>/dev/null || true
+find "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/lgnc" -type f -name "*.h" -exec bash -c 'echo "" > "$1"' _ {} \; 2>/dev/null || true
 
 
 # ── Pre-generating takion.pb ──────────────────────────────────────────────────

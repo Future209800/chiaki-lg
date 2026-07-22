@@ -18,7 +18,6 @@ jobs:
             python3 python3-pip protobuf-compiler \
             nasm yasm libtool autoconf automake nodejs npm
           sudo npm install -g @webos-tools/cli
-          # IL FIX: Forziamo la versione 3.x di protobuf per evitare il crash di nanopb
           pip3 install "protobuf<4"
 
       - name: Installa webOS NDK
@@ -36,7 +35,6 @@ jobs:
           chmod +x ndk-installer.sh
           sudo ./ndk-installer.sh -y -d /opt/webos-sdk
           
-          # Diventiamo proprietari di tutta la cartella per far funzionare 'find'
           sudo chown -R $USER:$USER /opt/webos-sdk
 
       - name: Clona il codice sorgente di chiaki-ng
@@ -44,19 +42,9 @@ jobs:
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
 
-      - name: Cerca librerie NDL nell'SDK (Diagnostica)
-        run: |
-          echo "Cerco file NDL nel SDK..."
-          find /opt/webos-sdk -name "*NDL*" -o -name "*ndl*"
-
-      - name: Esecuzione script di compilazione autonomo
+      - name: Esecuzione script di compilazione
         run: |
           export TOOLCHAIN_DIR=/opt/webos-sdk
-          
-          # FORZIAMO UN SOLO CORE PER VEDERE L'ERRORE PULITO ALLA FINE
-          export CMAKE_BUILD_PARALLEL_LEVEL=1
-          export MAKEFLAGS="-j1"
-          
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 

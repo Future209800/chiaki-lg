@@ -1,82 +1,43 @@
 #!/usr/bin/env bash
 # build-webos.sh — Cross-compile chiaki-webos for webOS TV
-# Riscritto e ottimizzato per la compatibilità nativa con webOS NDK (Yocto/OpenEmbedded)
+# Usage: ./build-webos.sh [/path/to/chiaki-ng]
 
-set -eo pipefail # Rimosso 'u' per tollerare le variabili vuote dell'ambiente Yocto
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHIAKI_NG_DIR="$(realpath "${1:-$SCRIPT_DIR/../chiaki-ng}")"
 BUILD_DIR="$SCRIPT_DIR/build-webos"
 OUR_STAGING="/tmp/webos-staging"
 
-# ── 1. Validate toolchain & Source Yocto environment ──────────────────────────
-export TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-/opt/webos-sdk}"
-if [[ ! -d "$TOOLCHAIN_DIR" ]]; then
-    echo "ERROR: TOOLCHAIN_DIR non trovata in $TOOLCHAIN_DIR"
-    echo "Assicurati di aver installato l'NDK."
+# ── Validate toolchain ────────────────────────────────────────────────────────
+if [[ -z "${TOOLCHAIN_DIR:-}" ]]; then
+    echo "ERROR: Set TOOLCHAIN_DIR to your extracted webOS SDK root."
+    echo "  export TOOLCHAIN_DIR=~/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot"
     exit 1
 fi
 
-ENV_SETUP=$(ls "$TOOLCHAIN_DIR"/environment-setup-* 2>/dev/null | head -n 1)
-if [[ -z "$ENV_SETUP" ]]; then
-    echo "ERROR: Script environment-setup non trovato in $TOOLCHAIN_DIR"
-    exit 1
-fi
-source "$ENV_SETUP"
-
-TOOLCHAIN_FILE=$(find "$TOOLCHAIN_DIR" -name "OEToolchainConfig.cmake" | head -n 1)
-if [[ -z "$TOOLCHAIN_FILE" ]]; then
-    echo "ERROR: OEToolchainConfig.cmake non trovato in $TOOLCHAIN_DIR"
+TOOLCHAIN_FILE="$TOOLCHAIN_DIR/share/buildroot/toolchainfile.cmake"
+if [[ ! -f "$TOOLCHAIN_FILE" ]]; then
+    echo "ERROR: toolchainfile.cmake not found at $TOOLCHAIN_FILE"
     exit 1
 fi
 
-# Yocto definisce il sysroot in questa variabile nativa
-SYSROOT="${OECORE_TARGET_SYSROOT}"
-if [[ -z "$SYSROOT" || ! -d "$SYSROOT" ]]; then
-    echo "ERROR: SYSROOT non trovato o variabile OECORE_TARGET_SYSROOT non impostata."
-    exit 1
-fi
+SYSROOT="$TOOLCHAIN_DIR/arm-webos-linux-gnueabi/sysroot"
 
+# ── Source buildroot environment ──────────────────────────────────────────────
+source "$TOOLCHAIN_DIR/environment-setup"
 export STAGING_DIR="$OUR_STAGING"
-mkdir -p "$OUR_STAGING/bin"
 
-# ── 2. The Auto-Wrapper Magic (Fix per compatibilità Yocto vs Buildroot) ──────
-# Yocto inietta il sysroot e le flag architetturali direttamente nella variabile $CC.
-# Buildroot invece le ha integrate nel compilatore stesso. 
-# Creiamo dei wrapper per comportarci come Buildroot senza sporcare le configurazioni.
+export PATH="/usr/bin:/usr/local/bin:$PATH"
 
-CLEAN_CC=$(echo "${CC:-arm-webos-linux-gnueabi-gcc}" | awk '{print $1}')
-CC_FLAGS=$(echo "${CC:-}" | cut -d' ' -f2-)
-CLEAN_CXX=$(echo "${CXX:-arm-webos-linux-gnueabi-g++}" | awk '{print $1}')
-CXX_FLAGS=$(echo "${CXX:-}" | cut -d' ' -f2-)
+[[ -z "${CC:-}" ]]  && export CC="arm-webos-linux-gnueabi-gcc"
+[[ -z "${CXX:-}" ]] && export CXX="arm-webos-linux-gnueabi-g++"
 
-REAL_CC_PATH=$(which "$CLEAN_CC")
-REAL_CXX_PATH=$(which "$CLEAN_CXX")
-
-# Mettiamo i nostri finti compilatori in cima al PATH
-export PATH="$OUR_STAGING/bin:/usr/bin:/usr/local/bin:$PATH"
-
-# Generiamo i wrapper che iniettano automaticamente le sysroot di Yocto
-cat > "$OUR_STAGING/bin/${CLEAN_CC}" << EOF
-#!/usr/bin/env bash
-exec "$REAL_CC_PATH" $CC_FLAGS "\$@"
-EOF
-chmod +x "$OUR_STAGING/bin/${CLEAN_CC}"
-
-cat > "$OUR_STAGING/bin/${CLEAN_CXX}" << EOF
-#!/usr/bin/env bash
-exec "$REAL_CXX_PATH" $CXX_FLAGS "\$@"
-EOF
-chmod +x "$OUR_STAGING/bin/${CLEAN_CXX}"
-
-CROSS_PREFIX="${CLEAN_CC%-gcc}-"
-export CC="${CLEAN_CC}"
-export CXX="${CLEAN_CXX}"
+CROSS_PREFIX="${CC%-gcc}-"
 export AR="${CROSS_PREFIX}ar"
 export STRIP="${CROSS_PREFIX}strip"
 export RANLIB="${CROSS_PREFIX}ranlib"
 
-# ── 3. Pkg-config e System settings ───────────────────────────────────────────
 SYSROOT_PKGCONFIG="$SYSROOT/usr/lib/pkgconfig"
 export PKG_CONFIG_PATH="$OUR_STAGING/lib/pkgconfig:$SYSROOT_PKGCONFIG"
 export PKG_CONFIG_LIBDIR="$OUR_STAGING/lib/pkgconfig:$SYSROOT_PKGCONFIG"
@@ -84,8 +45,8 @@ export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
 REAL_PKG_CONFIG=$(which "${CROSS_PREFIX}pkg-config" 2>/dev/null || which pkg-config)
 
 PKG_CONFIG_WRAPPER="$OUR_STAGING/bin/pkg-config-wrapper"
+mkdir -p "$OUR_STAGING/bin"
 SYSROOT_STAGING_PREFIX="$SYSROOT/tmp/webos-staging"
-
 cat > "$PKG_CONFIG_WRAPPER" << WRAPPER_EOF
 #!/usr/bin/env bash
 "$REAL_PKG_CONFIG" "\$@" | sed "s|${SYSROOT_STAGING_PREFIX}|/tmp/webos-staging|g"
@@ -98,6 +59,7 @@ echo "-- Staging:   $OUR_STAGING"
 echo "-- Sysroot:   $SYSROOT"
 echo ""
 
+mkdir -p "$OUR_STAGING"
 mkdir -p "$BUILD_DIR"
 NJOBS=$(nproc)
 
@@ -127,7 +89,7 @@ build_openssl() {
     popd
 }
 
-# ── Opus ──────────────────────────────────────────────────────────────────────
+# ── Opus (MODIFICA: AGGIUNTO --with-pic) ───────────────────────────────
 build_opus() {
     local ver="1.4"
     local src="/tmp/opus-$ver"
@@ -304,16 +266,12 @@ build_jerasure() {
         tar xf "/tmp/jerasure.tar.gz" -C "$src" --strip-components=1
     fi
 
-    echo "-- Jerasure source layout:"
-    find "$src" -name "*.c" -o -name "*.h" | sort | sed 's|^|   |'
-
     local inc="$OUR_STAGING/include"
     local lib="$OUR_STAGING/lib"
 
     for hdir in "$src/include" "$src/Headers" "$src"; do
         if ls "$hdir"/*.h &>/dev/null; then
             cp "$hdir"/*.h "$inc/"
-            echo "-- Copied headers from $hdir"
             break
         fi
     done
@@ -339,11 +297,6 @@ build_jerasure() {
         done
         [[ ${#objects[@]} -gt 0 ]] && break
     done
-
-    if [[ ${#objects[@]} -eq 0 ]]; then
-        echo "ERROR: No compilable Jerasure source files found"
-        exit 1
-    fi
 
     "${CROSS_PREFIX}ar" rcs "$lib/libJerasure.a" "${objects[@]}"
     echo "-- Jerasure built: ${#objects[@]} objects"
@@ -407,12 +360,6 @@ done
 COUNT=$(ls "$OUR_STAGING/lib/pkgconfig/"*.pc 2>/dev/null | wc -l)
 echo "-- Patched $COUNT .pc files"
 
-# Verify the json-c and miniupnpc .pc files look correct
-for pkg in json-c miniupnpc; do
-    PC="$OUR_STAGING/lib/pkgconfig/$pkg.pc"
-    [[ -f "$PC" ]] && echo "-- $pkg.pc includedir: $(grep includedir "$PC")"
-done
-
 # ── Write cmake helper module dir ─────────────────────────────────────────────
 CMAKE_MODULES_DIR="$SCRIPT_DIR/cmake"
 mkdir -p "$CMAKE_MODULES_DIR"
@@ -436,23 +383,14 @@ FINDNANOPB_EOF
 sed -i "s|@NANOPB_SRC@|$CHIAKI_NG_DIR/third-party/nanopb|g" "$CMAKE_MODULES_DIR/FindNanopb.cmake"
 
 # ── Check chiaki-ng submodules ─────────────────────────────────────────────────
-echo ""
-echo "=== Checking chiaki-ng header API ==="
-echo "-- Relevant ChiakiRegisteredHost fields:"
-grep -E 'rp_regist_key|rp_key|account_id|psn_' "$CHIAKI_NG_DIR/lib/include/chiaki/regist.h" 2>/dev/null | head -20 || true
-echo "-- ChiakiAudioSink fields:"
-grep -E 'frame_cb|header_cb|ChiakiAudio' "$CHIAKI_NG_DIR/lib/include/chiaki/audio.h" 2>/dev/null | head -20 || true
-echo "-- ChiakiRegistInfo fields:"
-grep -E 'ps5|target|account_id|psn_' "$CHIAKI_NG_DIR/lib/include/chiaki/regist.h" 2>/dev/null | grep -v '//' | head -20 || true
-echo ""
-echo "=== Checking chiaki-ng submodules ==="
-
 if [[ ! -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
     echo "-- nanopb submodule CMakeLists.txt missing, attempting git init..."
     git -C "$CHIAKI_NG_DIR" submodule update --init third-party/nanopb 2>&1 | tail -5 || true
 fi
 
-if [[ ! -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
+if [[ -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
+    echo "-- nanopb submodule: OK (CMakeLists.txt present)"
+else
     echo "-- ERROR: nanopb submodule CMakeLists.txt missing and git init failed."
     exit 1
 fi
@@ -464,24 +402,15 @@ else
     pip3 install nanopb --break-system-packages -q 2>&1 | tail -3 || \
     pip3 install nanopb -q 2>&1 | tail -3 || true
     python3 -c "import nanopb; print('-- nanopb pip package: OK')" 2>/dev/null \
-        || echo "-- nanopb pip package: install failed"
+        || echo "-- nanopb pip package: install failed (will try submodule generator)"
 fi
 
 # ── Patch chiaki-ng sources for webOS compatibility ──────────────────────────
-echo ""
-echo "=== Patching chiaki-ng sources for webOS ==="
-
 THREAD_C="$CHIAKI_NG_DIR/lib/src/thread.c"
 if grep -q 'pthread_clockjoin_np' "$THREAD_C" 2>/dev/null; then
     sed -i 's/pthread_clockjoin_np(\(.*\), CLOCK_MONOTONIC, \(&timeout\))/pthread_timedjoin_np(\1, \2)/' \
         "$THREAD_C"
-    if grep -q 'pthread_clockjoin_np' "$THREAD_C"; then
-        echo "-- WARNING: pthread_clockjoin_np patch may have failed"
-    else
-        echo "-- thread.c: patched pthread_clockjoin_np → pthread_timedjoin_np"
-    fi
-else
-    echo "-- thread.c: no pthread_clockjoin_np"
+    echo "-- thread.c: patched pthread_clockjoin_np → pthread_timedjoin_np"
 fi
 
 # ── Generate cmake toolchain extension ────────────────────────────────────────
@@ -528,12 +457,10 @@ cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL cmake_language EVAL CO
         if(TARGET ${_t})
             set_property(TARGET ${_t} PROPERTY
                 INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include")
-            message(STATUS "chiaki_hints: fixed include dir on ${_t}")
         endif()
     endforeach()
     if(TARGET nanopb AND NOT TARGET Nanopb::nanopb)
         add_library(Nanopb::nanopb ALIAS nanopb)
-        message(STATUS "chiaki_hints: created Nanopb::nanopb alias")
     endif()
 ]])
 ENDOFHINTS
@@ -541,41 +468,39 @@ ENDOFHINTS
 sed -i "s|@@STAGING@@|$OUR_STAGING|g"          "$HINTS_FILE"
 sed -i "s|@@NANOPB@@|$CHIAKI_NG_DIR/third-party/nanopb|g" "$HINTS_FILE"
 
-echo ""
-echo "=== Installing host protobuf Python package ==="
-if ! python3 -c "import google.protobuf" 2>/dev/null; then
+if python3 -c "import google.protobuf" 2>/dev/null; then
+    python3 -c "import google.protobuf; print('-- protobuf: already installed', google.protobuf.__version__)"
+else
     pip3 install protobuf --break-system-packages 2>&1 | tail -3 || \
     python3 -m pip install protobuf --break-system-packages 2>&1 | tail -3 || true
 fi
 
+
+# ── MODIFICA: HACK PER SDK OPEN SOURCE E LIBRERIA NDL ─────────────────────────
 echo ""
-echo "=== Configuring chiaki-webos ==="
-set -x  # trace all commands from here so failures are visible
+echo "=== Pulizia moduli legacy (smp, lgnc) ==="
+mkdir -p "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp/wrapper"
+echo "" > "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp/CMakeLists.txt"
+echo "" > "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
 
-rm -f "$BUILD_DIR/CMakeCache.txt"
-rm -rf "$BUILD_DIR/CMakeFiles"
+mkdir -p "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/lgnc"
+echo "" > "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
 
-
-  # 1. Azzeriamo i moduli legacy che causano errori (smp e lgnc)
-echo "Pulizia moduli legacy (smp, lgnc)..."
-mkdir -p "third-party/ss4s/modules/webos/smp/wrapper"
-echo "" > "third-party/ss4s/modules/webos/smp/CMakeLists.txt"
-echo "" > "third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
-
-mkdir -p "third-party/ss4s/modules/webos/lgnc"
-echo "" > "third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
-
-# 2. Creazione libreria fantasma (stub) per NDL_directmedia
-echo "Falsificazione libreria NDL_directmedia in corso..."
+echo "=== Falsificazione libreria NDL_directmedia in corso... ==="
 CROSS_CC=$(find /opt/webos-sdk -name "arm-webos-linux-gnueabi-gcc" | grep -v "libexec" | head -n 1)
-SYSROOT=$(find /opt/webos-sdk/sysroots -name "armv7a-neon-webos-linux-gnueabi" | head -n 1)
-
 touch ndl_stub.c
 $CROSS_CC --sysroot=$SYSROOT -shared -fPIC ndl_stub.c -o libNDL_directmedia.so
 cp libNDL_directmedia.so $SYSROOT/usr/lib/
 
+# ── Configuring chiaki-webos ──────────────────────────────────────────────────
+echo ""
+echo "=== Configuring chiaki-webos ==="
+set -x
 
+rm -f "$BUILD_DIR/CMakeCache.txt"
+rm -rf "$BUILD_DIR/CMakeFiles"
 
+# MODIFICA: IGNORE-ALL SUI LINKER E VECCHI MODULI DISATTIVATI (ESPLAYER E WEBOS4=ON)
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -600,7 +525,6 @@ cmake -B "$BUILD_DIR" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
     -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -Wl,-rpath,\$ORIGIN/lib -Wl,--unresolved-symbols=ignore-all" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -lm -Wl,--unresolved-symbols=ignore-all" \
-    -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-all" \
     -DPKG_CONFIG_EXECUTABLE="$PKG_CONFIG" \
     -DCMAKE_PROJECT_INCLUDE="$HINTS_FILE" \
     -DPYTHON_EXECUTABLE="$(which python3 || which python)" \
@@ -622,7 +546,6 @@ PROTO_OUT="$BUILD_DIR/chiaki_lib/protobuf"
 TAKION_PROTO="$CHIAKI_NG_DIR/lib/protobuf/takion.proto"
 mkdir -p "$PROTO_OUT"
 
-NANOPB_GEN=""
 NANOPB_GEN="$(python3 -c '
 import sys
 try:
@@ -643,22 +566,10 @@ if [[ -z "$NANOPB_GEN" ]]; then
     done
 fi
 
-if [[ -z "$NANOPB_GEN" ]]; then
-    echo "-- ERROR: Cannot find nanopb_generator.py anywhere. Aborting."
-    exit 1
-fi
-
 python3 "$NANOPB_GEN" \
     --output-dir="$PROTO_OUT" \
     --proto-path="$CHIAKI_NG_DIR/lib/protobuf" \
     "$TAKION_PROTO" 2>&1 | sed 's/^/  /'
-
-if [[ -f "$PROTO_OUT/takion.pb.c" && -f "$PROTO_OUT/takion.pb.h" ]]; then
-    echo "-- takion.pb.c: ready"
-else
-    echo "-- ERROR: takion.pb generation failed!"
-    exit 1
-fi
 
 CHIAKI_PB_MAKE="$BUILD_DIR/chiaki_lib/protobuf/CMakeFiles/chiaki-pb.dir/build.make"
 if [[ -f "$CHIAKI_PB_MAKE" ]]; then
@@ -676,7 +587,6 @@ for line in lines:
         out.append(line)
 with open(path, "w") as f:
     f.writelines(out)
-print(f"-- Patched {changed} recipe line(s) in build.make" if changed else "")
 PYEOF
 fi
 

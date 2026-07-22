@@ -598,7 +598,7 @@ cmake -B "$BUILD_DIR" \
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-    -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -Wl,-rpath,\$ORIGIN/lib" \
+    -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -Wl,-rpath,\$ORIGIN/lib -Wl,--unresolved-symbols=ignore-all" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -lm -Wl,--unresolved-symbols=ignore-all" \
     -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-all" \
     -DPKG_CONFIG_EXECUTABLE="$PKG_CONFIG" \

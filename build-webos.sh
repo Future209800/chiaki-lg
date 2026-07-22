@@ -555,9 +555,9 @@ set -x  # trace all commands from here so failures are visible
 rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
 
-# Azzeriamo il file sorgente che richiede l'header mancante
-mkdir -p "$1/third-party/ss4s/modules/webos/smp/wrapper"
-echo "" > "$1/third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
+# Azzeriamo il file sorgente nel percorso corretto del tuo repository (chiaki-lg)
+mkdir -p "third-party/ss4s/modules/webos/smp/wrapper"
+echo "" > "third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
 
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \

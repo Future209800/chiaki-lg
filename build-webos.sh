@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # build-webos.sh — Cross-compile chiaki-webos for webOS TV
-# Usage: ./build-webos.sh [/path/to/chiaki-ng]
+# Versione Ottimizzata: unisce i fix upstream con la compatibilità Yocto/SDK Open Source
 
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHIAKI_NG_DIR="$(realpath "${1:-$SCRIPT_DIR/../chiaki-ng}")"
 BUILD_DIR="$SCRIPT_DIR/build-webos"
 OUR_STAGING="/tmp/webos-staging"
 
-# ── Validate toolchain & Source Yocto environment ──────────────────────────
+# ── 1. Validate toolchain & Source Yocto environment ──────────────────────────
 export TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-/opt/webos-sdk}"
 if [[ ! -d "$TOOLCHAIN_DIR" ]]; then
     echo "ERROR: TOOLCHAIN_DIR non trovata in $TOOLCHAIN_DIR"
@@ -18,34 +18,52 @@ fi
 
 ENV_SETUP=$(ls "$TOOLCHAIN_DIR"/environment-setup-* 2>/dev/null | head -n 1)
 if [[ -z "$ENV_SETUP" ]]; then
-    echo "ERROR: Script environment-setup non trovato in $TOOLCHAIN_DIR"
+    echo "ERROR: Script environment-setup non trovato"
     exit 1
 fi
 source "$ENV_SETUP"
 
 TOOLCHAIN_FILE=$(find "$TOOLCHAIN_DIR" -name "OEToolchainConfig.cmake" | head -n 1)
-if [[ -z "$TOOLCHAIN_FILE" ]]; then
-    echo "ERROR: OEToolchainConfig.cmake non trovato in $TOOLCHAIN_DIR"
-    exit 1
-fi
-
 SYSROOT="${OECORE_TARGET_SYSROOT}"
-if [[ -z "$SYSROOT" || ! -d "$SYSROOT" ]]; then
-    echo "ERROR: SYSROOT non trovato o variabile OECORE_TARGET_SYSROOT non impostata."
+if [[ -z "$TOOLCHAIN_FILE" || -z "$SYSROOT" ]]; then
+    echo "ERROR: File toolchain Yocto o SYSROOT mancanti."
     exit 1
 fi
 
 export STAGING_DIR="$OUR_STAGING"
-export PATH="/usr/bin:/usr/local/bin:$PATH"
+mkdir -p "$OUR_STAGING/bin"
 
-[[ -z "${CC:-}" ]]  && export CC="arm-webos-linux-gnueabi-gcc"
-[[ -z "${CXX:-}" ]] && export CXX="arm-webos-linux-gnueabi-g++"
+# ── 2. The Auto-Wrapper Magic (Fix Yocto) ─────────────────────────────────────
+CLEAN_CC=$(echo "${CC:-arm-webos-linux-gnueabi-gcc}" | awk '{print $1}')
+CC_FLAGS=$(echo "${CC:-}" | cut -d' ' -f2-)
+CLEAN_CXX=$(echo "${CXX:-arm-webos-linux-gnueabi-g++}" | awk '{print $1}')
+CXX_FLAGS=$(echo "${CXX:-}" | cut -d' ' -f2-)
 
-CROSS_PREFIX="${CC%-gcc}-"
+REAL_CC_PATH=$(which "$CLEAN_CC")
+REAL_CXX_PATH=$(which "$CLEAN_CXX")
+
+export PATH="$OUR_STAGING/bin:/usr/bin:/usr/local/bin:$PATH"
+
+cat > "$OUR_STAGING/bin/${CLEAN_CC}" << EOF
+#!/usr/bin/env bash
+exec "$REAL_CC_PATH" $CC_FLAGS "\$@"
+EOF
+chmod +x "$OUR_STAGING/bin/${CLEAN_CC}"
+
+cat > "$OUR_STAGING/bin/${CLEAN_CXX}" << EOF
+#!/usr/bin/env bash
+exec "$REAL_CXX_PATH" $CXX_FLAGS "\$@"
+EOF
+chmod +x "$OUR_STAGING/bin/${CLEAN_CXX}"
+
+CROSS_PREFIX="${CLEAN_CC%-gcc}-"
+export CC="${CLEAN_CC}"
+export CXX="${CLEAN_CXX}"
 export AR="${CROSS_PREFIX}ar"
 export STRIP="${CROSS_PREFIX}strip"
 export RANLIB="${CROSS_PREFIX}ranlib"
 
+# ── 3. Pkg-config e System settings ───────────────────────────────────────────
 SYSROOT_PKGCONFIG="$SYSROOT/usr/lib/pkgconfig"
 export PKG_CONFIG_PATH="$OUR_STAGING/lib/pkgconfig:$SYSROOT_PKGCONFIG"
 export PKG_CONFIG_LIBDIR="$OUR_STAGING/lib/pkgconfig:$SYSROOT_PKGCONFIG"
@@ -53,8 +71,8 @@ export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
 REAL_PKG_CONFIG=$(which "${CROSS_PREFIX}pkg-config" 2>/dev/null || which pkg-config)
 
 PKG_CONFIG_WRAPPER="$OUR_STAGING/bin/pkg-config-wrapper"
-mkdir -p "$OUR_STAGING/bin"
 SYSROOT_STAGING_PREFIX="$SYSROOT/tmp/webos-staging"
+
 cat > "$PKG_CONFIG_WRAPPER" << WRAPPER_EOF
 #!/usr/bin/env bash
 "$REAL_PKG_CONFIG" "\$@" | sed "s|${SYSROOT_STAGING_PREFIX}|/tmp/webos-staging|g"
@@ -62,454 +80,218 @@ WRAPPER_EOF
 chmod +x "$PKG_CONFIG_WRAPPER"
 export PKG_CONFIG="$PKG_CONFIG_WRAPPER"
 
-echo "-- Toolchain: CC=$CC  PREFIX=$CROSS_PREFIX"
-echo "-- Staging:   $OUR_STAGING"
-echo "-- Sysroot:   $SYSROOT"
-echo ""
-
-mkdir -p "$OUR_STAGING"
 mkdir -p "$BUILD_DIR"
 NJOBS=$(nproc)
 
-
-# ── OpenSSL ───────────────────────────────────────────────────────────────────
+# ── Build Libraries ───────────────────────────────────────────────────────────
 build_openssl() {
-    local ver="3.2.1"
-    local src="/tmp/openssl-$ver"
-    [[ -f "$OUR_STAGING/lib/libssl.a" ]] && { echo "-- OpenSSL: skip"; return; }
-    echo "-- Building OpenSSL $ver"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/openssl-$ver.tar.gz" \
-            "https://github.com/openssl/openssl/releases/download/openssl-$ver/openssl-$ver.tar.gz"
-        tar xf "/tmp/openssl-$ver.tar.gz" -C /tmp
-    fi
-    rm -f "$src/Makefile"
-    pushd "$src"
+    local src="/tmp/openssl-3.2.1"
+    [[ -f "$OUR_STAGING/lib/libssl.a" ]] && return
+    wget -qO "$src.tar.gz" "https://github.com/openssl/openssl/releases/download/openssl-3.2.1/openssl-3.2.1.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp; pushd "$src"
     unset CC CXX AR LD RANLIB NM STRIP
-    ./Configure linux-armv4 --prefix="$OUR_STAGING" \
-        no-shared no-tests no-docs \
-        --cross-compile-prefix="$CROSS_PREFIX"
-    make -j"$NJOBS" build_sw
-    make install_sw
-    export CC="${CROSS_PREFIX}gcc" CXX="${CROSS_PREFIX}g++"
-    export AR="${CROSS_PREFIX}ar"  LD="${CROSS_PREFIX}ld"
-    export RANLIB="${CROSS_PREFIX}ranlib" NM="${CROSS_PREFIX}nm"
-    export STRIP="${CROSS_PREFIX}strip"
+    ./Configure linux-armv4 --prefix="$OUR_STAGING" no-shared no-tests no-docs --cross-compile-prefix="$CROSS_PREFIX"
+    make -j"$NJOBS" build_sw && make install_sw
+    export CC="${CROSS_PREFIX}gcc" CXX="${CROSS_PREFIX}g++" AR="${CROSS_PREFIX}ar" RANLIB="${CROSS_PREFIX}ranlib" STRIP="${CROSS_PREFIX}strip"
     popd
 }
 
-# ── Opus (MODIFICA: AGGIUNTO --with-pic) ───────────────────────────────
 build_opus() {
-    local ver="1.4"
-    local src="/tmp/opus-$ver"
-    [[ -f "$OUR_STAGING/lib/libopus.a" ]] && { echo "-- Opus: skip"; return; }
-    echo "-- Building Opus $ver"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/opus-$ver.tar.gz" \
-            "https://downloads.xiph.org/releases/opus/opus-$ver.tar.gz"
-        tar xf "/tmp/opus-$ver.tar.gz" -C /tmp
-    fi
-    pushd "$src"
-    ./configure --host=arm-webos-linux-gnueabi --prefix="$OUR_STAGING" \
-        --enable-static --disable-shared --disable-doc --disable-extra-programs --with-pic
-    make -j"$NJOBS" && make install
-    popd
+    local src="/tmp/opus-1.4"
+    [[ -f "$OUR_STAGING/lib/libopus.a" ]] && return
+    wget -qO "$src.tar.gz" "https://downloads.xiph.org/releases/opus/opus-1.4.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp; pushd "$src"
+    ./configure --host=arm-webos-linux-gnueabi --prefix="$OUR_STAGING" --enable-static --disable-shared --disable-doc --disable-extra-programs --with-pic
+    make -j"$NJOBS" && make install; popd
 }
 
-# ── FFmpeg ────────────────────────────────────────────────────────────────────
 build_ffmpeg() {
-    local ver="6.1.1"
-    local src="/tmp/ffmpeg-$ver"
-    [[ -f "$OUR_STAGING/lib/libavcodec.a" ]] && { echo "-- FFmpeg: skip"; return; }
-    echo "-- Building FFmpeg $ver"
-    rm -f "$src/config.mak" "$src/config.h"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/ffmpeg-$ver.tar.gz" "https://ffmpeg.org/releases/ffmpeg-$ver.tar.gz"
-        tar xf "/tmp/ffmpeg-$ver.tar.gz" -C /tmp
-    fi
-    pushd "$src"
-    ./configure \
-        --prefix="$OUR_STAGING" \
-        --enable-cross-compile --cross-prefix="$CROSS_PREFIX" \
-        --arch=arm --cpu=cortex-a15 --target-os=linux \
-        --enable-static --disable-shared \
+    local src="/tmp/ffmpeg-6.1.1"
+    [[ -f "$OUR_STAGING/lib/libavcodec.a" ]] && return
+    wget -qO "$src.tar.gz" "https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp; pushd "$src"
+    ./configure --prefix="$OUR_STAGING" --enable-cross-compile --cross-prefix="$CROSS_PREFIX" \
+        --arch=arm --cpu=cortex-a15 --target-os=linux --enable-static --disable-shared \
         --disable-programs --disable-doc --disable-network --disable-avdevice \
-        --disable-avformat --disable-swresample \
-        --enable-avcodec --enable-avutil --enable-swscale \
-        --enable-decoder=h264,hevc \
-        --disable-decoder=mlp,truehd \
-        --enable-parser=h264,hevc --disable-parser=mlp \
-        --enable-demuxer=h264,hevc \
-        --extra-cflags="-I$OUR_STAGING/include" \
-        --extra-ldflags="-L$OUR_STAGING/lib"
-    make -j"$NJOBS" && make install
-    popd
+        --disable-avformat --disable-swresample --enable-avcodec --enable-avutil --enable-swscale \
+        --enable-decoder=h264,hevc --disable-decoder=mlp,truehd \
+        --enable-parser=h264,hevc --disable-parser=mlp --enable-demuxer=h264,hevc \
+        --extra-cflags="-I$OUR_STAGING/include" --extra-ldflags="-L$OUR_STAGING/lib"
+    make -j"$NJOBS" && make install; popd
 }
 
-# ── json-c ────────────────────────────────────────────────────────────────────
 build_jsonc() {
-    local ver="0.17"
-    local src="/tmp/json-c-$ver"
-    [[ -f "$OUR_STAGING/lib/libjson-c.a" ]] && { echo "-- json-c: skip"; return; }
-    echo "-- Building json-c $ver"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/json-c-$ver.tar.gz" \
-            "https://github.com/json-c/json-c/archive/json-c-$ver-20230812.tar.gz"
-        tar xf "/tmp/json-c-$ver.tar.gz" -C /tmp
-        mv "/tmp/json-c-json-c-$ver-20230812" "$src"
-    fi
-    local bdir="$src/build"; mkdir -p "$bdir"
-    cmake -B "$bdir" -S "$src" \
-        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-        -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" \
-        -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF
-    cmake --build "$bdir" -j"$NJOBS"
-    cmake --install "$bdir"
+    local src="/tmp/json-c-0.17"
+    [[ -f "$OUR_STAGING/lib/libjson-c.a" ]] && return
+    wget -qO "$src.tar.gz" "https://github.com/json-c/json-c/archive/json-c-0.17-20230812.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp; mv "/tmp/json-c-json-c-0.17-20230812" "$src"
+    local bdir="$src/build"; cmake -B "$bdir" -S "$src" -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF
+    cmake --build "$bdir" -j"$NJOBS" && cmake --install "$bdir"
 }
 
-# ── miniupnpc ─────────────────────────────────────────────────────────────────
 build_miniupnpc() {
-    local ver="2.2.7"
-    local src="/tmp/miniupnpc-$ver"
-    [[ -f "$OUR_STAGING/lib/libminiupnpc.a" ]] && { echo "-- miniupnpc: skip"; return; }
-    echo "-- Building miniupnpc $ver"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/miniupnpc-$ver.tar.gz" \
-            "https://miniupnp.tuxfamily.org/files/miniupnpc-$ver.tar.gz"
-        tar xf "/tmp/miniupnpc-$ver.tar.gz" -C /tmp
-    fi
-    local bdir="$src/build"; mkdir -p "$bdir"
-    cmake -B "$bdir" -S "$src" \
-        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-        -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DUPNPC_BUILD_STATIC=ON -DUPNPC_BUILD_SHARED=OFF \
-        -DUPNPC_BUILD_TESTS=OFF -DUPNPC_BUILD_SAMPLE=OFF
-    cmake --build "$bdir" -j"$NJOBS"
-    cmake --install "$bdir"
+    local src="/tmp/miniupnpc-2.2.7"
+    [[ -f "$OUR_STAGING/lib/libminiupnpc.a" ]] && return
+    wget -qO "$src.tar.gz" "https://miniupnp.tuxfamily.org/files/miniupnpc-2.2.7.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp
+    local bdir="$src/build"; cmake -B "$bdir" -S "$src" -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" -DBUILD_SHARED_LIBS=OFF -DUPNPC_BUILD_STATIC=ON -DUPNPC_BUILD_SHARED=OFF -DUPNPC_BUILD_TESTS=OFF -DUPNPC_BUILD_SAMPLE=OFF
+    cmake --build "$bdir" -j"$NJOBS" && cmake --install "$bdir"
 }
 
-# ── cURL ──────────────────────────────────────────────────────────────────────
 build_curl() {
-    local ver="8.7.1"
-    local src="/tmp/curl-$ver"
-    if [[ -f "$OUR_STAGING/lib/libcurl.a" ]] && \
-        grep -q "CURLOPT_WS_OPTIONS" "$OUR_STAGING/include/curl/curl.h" 2>/dev/null; then
-        echo "-- cURL: skip (WebSocket enabled)"; return
-    fi
-    [[ -f "$OUR_STAGING/lib/libcurl.a" ]] && echo "-- cURL: rebuilding to add --enable-websockets"
-    echo "-- Building cURL $ver"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/curl-$ver.tar.gz" "https://curl.se/download/curl-$ver.tar.gz"
-        tar xf "/tmp/curl-$ver.tar.gz" -C /tmp
-    fi
-    pushd "$src"
-    ./configure \
-        --host=arm-webos-linux-gnueabi --prefix="$OUR_STAGING" \
-        --enable-static --disable-shared \
-        --with-openssl="$OUR_STAGING" \
-        --enable-websockets \
-        --disable-ldap --disable-ldaps --disable-rtsp --disable-dict \
-        --disable-telnet --disable-tftp --disable-pop3 --disable-imap \
-        --disable-smb --disable-smtp --disable-gopher --disable-mqtt \
-        --disable-manual --disable-docs \
-        --without-libidn2 --without-librtmp --without-brotli --without-zstd
-    make -j"$NJOBS" && make install
-    popd
+    local src="/tmp/curl-8.7.1"
+    if [[ -f "$OUR_STAGING/lib/libcurl.a" ]] && grep -q "CURLOPT_WS_OPTIONS" "$OUR_STAGING/include/curl/curl.h" 2>/dev/null; then return; fi
+    wget -qO "$src.tar.gz" "https://curl.se/download/curl-8.7.1.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp; pushd "$src"
+    ./configure --host=arm-webos-linux-gnueabi --prefix="$OUR_STAGING" --enable-static --disable-shared --with-openssl="$OUR_STAGING" --enable-websockets \
+        --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet --disable-tftp --disable-pop3 --disable-imap \
+        --disable-smb --disable-smtp --disable-gopher --disable-mqtt --disable-manual --disable-docs --without-libidn2 --without-librtmp --without-brotli --without-zstd
+    make -j"$NJOBS" && make install; popd
 }
 
-# ── GF-Complete ───────────────────────────────────────────────────────────────
 build_gf_complete() {
     local src="/tmp/gf-complete-src"
-    if [[ -f "$OUR_STAGING/lib/libgf_complete.a" ]]; then
-        echo "-- GF-Complete: skip"; return
-    fi
-    echo "-- Building GF-Complete (manual compile)"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/gf-complete.tar.gz"             "https://github.com/ceph/gf-complete/archive/refs/heads/master.tar.gz"
-        mkdir -p "$src"
-        tar xf "/tmp/gf-complete.tar.gz" -C "$src" --strip-components=1
-    fi
-
-    local inc="$OUR_STAGING/include"
-    local lib="$OUR_STAGING/lib"
-    mkdir -p "$inc" "$lib"
-    cp "$src"/include/*.h "$inc/" 2>/dev/null || true
-
-    local obj_dir="/tmp/gf-complete-obj"
-    mkdir -p "$obj_dir"
+    [[ -f "$OUR_STAGING/lib/libgf_complete.a" ]] && return
+    wget -qO "/tmp/gf-complete.tar.gz" "https://github.com/ceph/gf-complete/archive/refs/heads/master.tar.gz"
+    mkdir -p "$src"; tar xf "/tmp/gf-complete.tar.gz" -C "$src" --strip-components=1
+    mkdir -p "$OUR_STAGING/include" "$OUR_STAGING/lib"
+    cp "$src"/include/*.h "$OUR_STAGING/include/" 2>/dev/null || true
+    local obj_dir="/tmp/gf-complete-obj"; mkdir -p "$obj_dir"
     local objects=()
     for f in "$src"/src/*.c; do
         [[ -f "$f" ]] || continue
         local obj="$obj_dir/$(basename "${f%.c}").o"
-        echo "   CC $(basename $f)"
-        "${CROSS_PREFIX}gcc" -O2 -fPIC             -I"$src/include"             -c "$f" -o "$obj"
+        "${CROSS_PREFIX}gcc" -O2 -fPIC -I"$src/include" -c "$f" -o "$obj"
         objects+=("$obj")
     done
-    "${CROSS_PREFIX}ar" rcs "$lib/libgf_complete.a" "${objects[@]}"
-    echo "-- GF-Complete built: ${#objects[@]} objects"
+    "${CROSS_PREFIX}ar" rcs "$OUR_STAGING/lib/libgf_complete.a" "${objects[@]}"
 }
 
-# ── Jerasure ─────────────────────────────────────────────────────────────────
 build_jerasure() {
     local src="/tmp/jerasure-src"
-    if [[ -f "$OUR_STAGING/lib/libJerasure.a" ]]; then
-        echo "-- Jerasure: skip"; return
-    fi
-    echo "-- Building Jerasure 2.0 (manual compile)"
-    if [[ ! -d "$src" ]]; then
-        local dl_ok=0
-        for url in \
-            "https://github.com/ceph/jerasure/archive/refs/heads/master.tar.gz" \
-            "https://github.com/tsuraan/Jerasure/archive/refs/heads/master.tar.gz" \
-            "https://github.com/tsuraan/Jerasure/archive/refs/tags/v2.0.tar.gz"
-        do
-            echo "-- Trying Jerasure: $url"
-            wget -qO "/tmp/jerasure.tar.gz" "$url" && dl_ok=1 && break || true
-        done
-        if [[ $dl_ok -eq 0 ]]; then
-            echo "ERROR: All Jerasure download URLs failed"
-            exit 1
-        fi
-        mkdir -p "$src"
-        tar xf "/tmp/jerasure.tar.gz" -C "$src" --strip-components=1
-    fi
-
-    local inc="$OUR_STAGING/include"
-    local lib="$OUR_STAGING/lib"
-
+    [[ -f "$OUR_STAGING/lib/libJerasure.a" ]] && return
+    wget -qO "/tmp/jerasure.tar.gz" "https://github.com/tsuraan/Jerasure/archive/refs/tags/v2.0.tar.gz" || \
+    wget -qO "/tmp/jerasure.tar.gz" "https://github.com/ceph/jerasure/archive/refs/heads/master.tar.gz"
+    mkdir -p "$src"; tar xf "/tmp/jerasure.tar.gz" -C "$src" --strip-components=1
     for hdir in "$src/include" "$src/Headers" "$src"; do
-        if ls "$hdir"/*.h &>/dev/null; then
-            cp "$hdir"/*.h "$inc/"
-            break
-        fi
+        if ls "$hdir"/*.h &>/dev/null; then cp "$hdir"/*.h "$OUR_STAGING/include/"; break; fi
     done
-
-    local obj_dir="/tmp/jerasure-obj"
-    mkdir -p "$obj_dir"
+    local obj_dir="/tmp/jerasure-obj"; mkdir -p "$obj_dir"
     local objects=()
-
-    local search_dirs=("$src/src" "$src/Examples" "$src")
-    for d in "${search_dirs[@]}"; do
+    for d in "$src/src" "$src/Examples" "$src"; do
         [[ -d "$d" ]] || continue
         for f in "$d"/*.c; do
-            [[ -f "$f" ]] || continue
-            local base; base="$(basename "$f")"
-            [[ "$base" == example* ]] && continue
-            [[ "$base" == test* ]]    && continue
-            [[ "$base" == decoder* ]] && continue
-            [[ "$base" == encoder* ]] && continue
+            local base="$(basename "$f")"
+            [[ "$base" == example* || "$base" == test* || "$base" == decoder* || "$base" == encoder* ]] && continue
             local obj="$obj_dir/${base%.c}.o"
-            echo "   CC $base"
-            "${CROSS_PREFIX}gcc" -O2 -fPIC                 -I"$inc"                 -c "$f" -o "$obj"
+            "${CROSS_PREFIX}gcc" -O2 -fPIC -I"$OUR_STAGING/include" -c "$f" -o "$obj"
             objects+=("$obj")
         done
         [[ ${#objects[@]} -gt 0 ]] && break
     done
-
-    "${CROSS_PREFIX}ar" rcs "$lib/libJerasure.a" "${objects[@]}"
-    echo "-- Jerasure built: ${#objects[@]} objects"
+    "${CROSS_PREFIX}ar" rcs "$OUR_STAGING/lib/libJerasure.a" "${objects[@]}"
 }
 
-# ── libevent ──────────────────────────────────────────────────────────────────
 build_libevent() {
-    local ver="2.1.12-stable"
-    local src="/tmp/libevent-$ver"
-    [[ -f "$OUR_STAGING/lib/libevent.a" ]] && { echo "-- libevent: skip"; return; }
-    echo "-- Building libevent $ver"
-    if [[ ! -d "$src" ]]; then
-        wget -qO "/tmp/libevent-$ver.tar.gz" \
-            "https://github.com/libevent/libevent/releases/download/release-$ver/libevent-$ver.tar.gz"
-        tar xf "/tmp/libevent-$ver.tar.gz" -C /tmp
-    fi
-    local bdir="$src/build"; mkdir -p "$bdir"
-    cmake -B "$bdir" -S "$src" \
-        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-        -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DEVENT__DISABLE_TESTS=ON \
-        -DEVENT__DISABLE_SAMPLES=ON \
-        -DEVENT__DISABLE_OPENSSL=ON \
-        -DEVENT__LIBRARY_TYPE=STATIC
-    cmake --build "$bdir" -j"$NJOBS"
-    cmake --install "$bdir"
+    local src="/tmp/libevent-2.1.12-stable"
+    [[ -f "$OUR_STAGING/lib/libevent.a" ]] && return
+    wget -qO "$src.tar.gz" "https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/libevent-2.1.12-stable.tar.gz"
+    tar xf "$src.tar.gz" -C /tmp
+    local bdir="$src/build"; cmake -B "$bdir" -S "$src" -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" -DCMAKE_INSTALL_PREFIX="$OUR_STAGING" -DBUILD_SHARED_LIBS=OFF -DEVENT__DISABLE_TESTS=ON -DEVENT__DISABLE_SAMPLES=ON -DEVENT__DISABLE_OPENSSL=ON -DEVENT__LIBRARY_TYPE=STATIC
+    cmake --build "$bdir" -j"$NJOBS" && cmake --install "$bdir"
 }
 
-build_openssl
-build_opus
-build_jsonc
-build_miniupnpc
-build_curl
-build_gf_complete
-build_jerasure
-build_libevent
+build_openssl; build_opus; build_ffmpeg; build_jsonc; build_miniupnpc; build_curl; build_gf_complete; build_jerasure; build_libevent
 
-# ── Clone ss4s ────────────────────────────────────────────────────────────────
+# ── Dependencies Fixes ────────────────────────────────────────────────────────
 SS4S_DIR="$SCRIPT_DIR/third-party/ss4s"
 if [[ ! -f "$SS4S_DIR/CMakeLists.txt" ]]; then
-    echo "-- Cloning ss4s..."
     mkdir -p "$SCRIPT_DIR/third-party"
     git clone --depth=1 https://github.com/mariotaku/ss4s.git "$SS4S_DIR"
-else
-    echo "-- ss4s: already present ($(git -C "$SS4S_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown'))"
 fi
 
-# ── Patch all staging .pc files ───────────────────────────────────────────────
-echo ""
-echo "=== Patching staging .pc files to use hardcoded absolute paths ==="
 for pc in "$OUR_STAGING"/lib/pkgconfig/*.pc; do
     [[ -f "$pc" ]] || continue
-    sed -i "/^prefix=/d"                                              "$pc"
-    sed -i "/^exec_prefix=/d"                                         "$pc"
-    sed -i "s|^includedir=.*|includedir=$OUR_STAGING/include|"       "$pc"
-    sed -i "s|^libdir=.*|libdir=$OUR_STAGING/lib|"                   "$pc"
-    sed -i "s|\${prefix}|$OUR_STAGING|g"                             "$pc"
-    sed -i "s|\${exec_prefix}|$OUR_STAGING|g"                        "$pc"
+    sed -i -e "/^prefix=/d" -e "/^exec_prefix=/d" -e "s|^includedir=.*|includedir=$OUR_STAGING/include|" -e "s|^libdir=.*|libdir=$OUR_STAGING/lib|" -e "s|\${prefix}|$OUR_STAGING|g" -e "s|\${exec_prefix}|$OUR_STAGING|g" "$pc"
 done
-COUNT=$(ls "$OUR_STAGING/lib/pkgconfig/"*.pc 2>/dev/null | wc -l)
-echo "-- Patched $COUNT .pc files"
 
-# ── Write cmake helper module dir ─────────────────────────────────────────────
 CMAKE_MODULES_DIR="$SCRIPT_DIR/cmake"
 mkdir -p "$CMAKE_MODULES_DIR"
-cat > "$CMAKE_MODULES_DIR/FindNanopb.cmake" << 'FINDNANOPB_EOF'
+cat > "$CMAKE_MODULES_DIR/FindNanopb.cmake" << 'EOF'
 set(_nanopb_src "@NANOPB_SRC@")
 list(APPEND CMAKE_MODULE_PATH "${_nanopb_src}/extra")
 include("${_nanopb_src}/extra/FindNanopb.cmake" OPTIONAL RESULT_VARIABLE _found)
-if(NOT _found)
-    if(NOT TARGET nanopb)
-        add_subdirectory("${_nanopb_src}" nanopb_build EXCLUDE_FROM_ALL)
-    endif()
+if(NOT _found AND NOT TARGET nanopb)
+    add_subdirectory("${_nanopb_src}" nanopb_build EXCLUDE_FROM_ALL)
 endif()
 if(TARGET nanopb AND NOT TARGET Nanopb::nanopb)
     add_library(Nanopb::nanopb ALIAS nanopb)
 endif()
 if(TARGET Nanopb::nanopb)
-    set(Nanopb_FOUND TRUE)
-    set(NANOPB_FOUND TRUE)
+    set(Nanopb_FOUND TRUE); set(NANOPB_FOUND TRUE)
 endif()
-FINDNANOPB_EOF
+EOF
 sed -i "s|@NANOPB_SRC@|$CHIAKI_NG_DIR/third-party/nanopb|g" "$CMAKE_MODULES_DIR/FindNanopb.cmake"
 
-# ── Check chiaki-ng submodules ─────────────────────────────────────────────────
 if [[ ! -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
-    echo "-- nanopb submodule CMakeLists.txt missing, attempting git init..."
-    git -C "$CHIAKI_NG_DIR" submodule update --init third-party/nanopb 2>&1 | tail -5 || true
+    git -C "$CHIAKI_NG_DIR" submodule update --init third-party/nanopb 2>/dev/null || true
 fi
+if ! python3 -c "import nanopb" 2>/dev/null; then pip3 install nanopb --break-system-packages -q 2>/dev/null || true; fi
 
-if [[ -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
-    echo "-- nanopb submodule: OK (CMakeLists.txt present)"
-else
-    echo "-- ERROR: nanopb submodule CMakeLists.txt missing and git init failed."
-    exit 1
-fi
-
-echo "-- Installing/verifying nanopb pip package (for generator)..."
-if python3 -c "import nanopb" 2>/dev/null; then
-    echo "-- nanopb pip package: already installed"
-else
-    pip3 install nanopb --break-system-packages -q 2>&1 | tail -3 || \
-    pip3 install nanopb -q 2>&1 | tail -3 || true
-    python3 -c "import nanopb; print('-- nanopb pip package: OK')" 2>/dev/null \
-        || echo "-- nanopb pip package: install failed (will try submodule generator)"
-fi
-
-# ── Patch chiaki-ng sources for webOS compatibility ──────────────────────────
 THREAD_C="$CHIAKI_NG_DIR/lib/src/thread.c"
 if grep -q 'pthread_clockjoin_np' "$THREAD_C" 2>/dev/null; then
-    sed -i 's/pthread_clockjoin_np(\(.*\), CLOCK_MONOTONIC, \(&timeout\))/pthread_timedjoin_np(\1, \2)/' \
-        "$THREAD_C"
-    echo "-- thread.c: patched pthread_clockjoin_np → pthread_timedjoin_np"
+    sed -i 's/pthread_clockjoin_np(\(.*\), CLOCK_MONOTONIC, \(&timeout\))/pthread_timedjoin_np(\1, \2)/' "$THREAD_C"
 fi
 
-# ── Generate cmake toolchain extension ────────────────────────────────────────
 HINTS_FILE="$BUILD_DIR/chiaki_hints.cmake"
 mkdir -p "$BUILD_DIR"
-
-cat > "$HINTS_FILE" << 'ENDOFHINTS'
+cat > "$HINTS_FILE" << 'EOF'
 if(NOT TARGET CURL::libcurl)
     add_library(CURL::libcurl STATIC IMPORTED GLOBAL)
-    set_target_properties(CURL::libcurl PROPERTIES
-        IMPORTED_LOCATION             "@@STAGING@@/lib/libcurl.a"
-        INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include"
-        INTERFACE_LINK_LIBRARIES      "OpenSSL::SSL;OpenSSL::Crypto;z;pthread"
-    )
-    set(CURL_FOUND        TRUE)
-    set(CURL_LIBRARIES    "@@STAGING@@/lib/libcurl.a")
-    set(CURL_INCLUDE_DIRS "@@STAGING@@/include")
-    set(CURL_VERSION_STRING "8.7.1")
+    set_target_properties(CURL::libcurl PROPERTIES IMPORTED_LOCATION "@@STAGING@@/lib/libcurl.a" INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include" INTERFACE_LINK_LIBRARIES "OpenSSL::SSL;OpenSSL::Crypto;z;pthread")
+    set(CURL_FOUND TRUE); set(CURL_LIBRARIES "@@STAGING@@/lib/libcurl.a"); set(CURL_INCLUDE_DIRS "@@STAGING@@/include"); set(CURL_VERSION_STRING "8.7.1")
 endif()
-
-set(PYTHON_EXECUTABLE  "/usr/bin/python3" CACHE FILEPATH "Host Python" FORCE)
+set(PYTHON_EXECUTABLE "/usr/bin/python3" CACHE FILEPATH "Host Python" FORCE)
 set(Python3_EXECUTABLE "/usr/bin/python3" CACHE FILEPATH "Host Python 3" FORCE)
-set(Python_EXECUTABLE  "/usr/bin/python3" CACHE FILEPATH "Host Python" FORCE)
-
+set(Python_EXECUTABLE "/usr/bin/python3" CACHE FILEPATH "Host Python" FORCE)
 if(NOT TARGET GF-Complete::GF-Complete)
     add_library(GF-Complete::GF-Complete STATIC IMPORTED GLOBAL)
-    set_target_properties(GF-Complete::GF-Complete PROPERTIES
-        IMPORTED_LOCATION             "@@STAGING@@/lib/libgf_complete.a"
-        INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include"
-    )
+    set_target_properties(GF-Complete::GF-Complete PROPERTIES IMPORTED_LOCATION "@@STAGING@@/lib/libgf_complete.a" INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include")
 endif()
-
 if(NOT TARGET Jerasure::Jerasure)
     add_library(Jerasure::Jerasure STATIC IMPORTED GLOBAL)
-    set_target_properties(Jerasure::Jerasure PROPERTIES
-        IMPORTED_LOCATION             "@@STAGING@@/lib/libJerasure.a"
-        INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include"
-        INTERFACE_LINK_LIBRARIES      "GF-Complete::GF-Complete"
-    )
+    set_target_properties(Jerasure::Jerasure PROPERTIES IMPORTED_LOCATION "@@STAGING@@/lib/libJerasure.a" INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include" INTERFACE_LINK_LIBRARIES "GF-Complete::GF-Complete")
 endif()
-
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL cmake_language EVAL CODE [[
     foreach(_t PkgConfig::json-c PkgConfig::MINIUPNPC PkgConfig::miniupnpc PkgConfig::libevent PkgConfig::LIBEVENT PkgConfig::libevent_core PkgConfig::libevent_pthreads)
         if(TARGET ${_t})
-            set_property(TARGET ${_t} PROPERTY
-                INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include")
+            set_property(TARGET ${_t} PROPERTY INTERFACE_INCLUDE_DIRECTORIES "@@STAGING@@/include")
         endif()
     endforeach()
     if(TARGET nanopb AND NOT TARGET Nanopb::nanopb)
         add_library(Nanopb::nanopb ALIAS nanopb)
     endif()
 ]])
-ENDOFHINTS
+EOF
+sed -i "s|@@STAGING@@|$OUR_STAGING|g" "$HINTS_FILE"
 
-sed -i "s|@@STAGING@@|$OUR_STAGING|g"          "$HINTS_FILE"
-sed -i "s|@@NANOPB@@|$CHIAKI_NG_DIR/third-party/nanopb|g" "$HINTS_FILE"
+if ! python3 -c "import google.protobuf" 2>/dev/null; then pip3 install protobuf --break-system-packages 2>/dev/null || true; fi
 
-if python3 -c "import google.protobuf" 2>/dev/null; then
-    python3 -c "import google.protobuf; print('-- protobuf: already installed', google.protobuf.__version__)"
-else
-    pip3 install protobuf --break-system-packages 2>&1 | tail -3 || \
-    python3 -m pip install protobuf --break-system-packages 2>&1 | tail -3 || true
-fi
-
-
-# ── MODIFICA: HACK PER SDK OPEN SOURCE E LIBRERIA NDL ─────────────────────────
-echo ""
-echo "=== Pulizia moduli legacy (smp, lgnc) ==="
+# ── HACK SDK OPEN SOURCE ──────────────────────────────────────────────────────
 mkdir -p "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp/wrapper"
 echo "" > "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp/CMakeLists.txt"
 echo "" > "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
-
 mkdir -p "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/lgnc"
 echo "" > "$CHIAKI_NG_DIR/third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
 
-echo "=== Falsificazione libreria NDL_directmedia in corso... ==="
-CROSS_CC=$(find /opt/webos-sdk -name "arm-webos-linux-gnueabi-gcc" | grep -v "libexec" | head -n 1)
 touch ndl_stub.c
-$CROSS_CC --sysroot=$SYSROOT -shared -fPIC ndl_stub.c -o libNDL_directmedia.so
+${CC:-arm-webos-linux-gnueabi-gcc} --sysroot=$SYSROOT -shared -fPIC ndl_stub.c -o libNDL_directmedia.so
 cp libNDL_directmedia.so $SYSROOT/usr/lib/
 
 # ── Configuring chiaki-webos ──────────────────────────────────────────────────
-echo ""
-echo "=== Configuring chiaki-webos ==="
-set -x
-
 rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
 
-# MODIFICA: IGNORE-ALL SUI LINKER E VECCHI MODULI DISATTIVATI (ESPLAYER E WEBOS4=ON)
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -534,6 +316,7 @@ cmake -B "$BUILD_DIR" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
     -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -Wl,-rpath,\$ORIGIN/lib -Wl,--unresolved-symbols=ignore-all" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -lm -Wl,--unresolved-symbols=ignore-all" \
+    -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-all" \
     -DPKG_CONFIG_EXECUTABLE="$PKG_CONFIG" \
     -DCMAKE_PROJECT_INCLUDE="$HINTS_FILE" \
     -DPYTHON_EXECUTABLE="$(which python3 || which python)" \
@@ -549,64 +332,31 @@ cmake -B "$BUILD_DIR" \
     -DSS4S_MODULE_DISABLE_NDL_WEBOS4=ON \
     -DSS4S_MODULE_DISABLE_NDL_WEBOS5=OFF
 
-echo ""
-echo "=== Pre-generating takion.pb after configure ==="
+# ── Pre-generating takion.pb ──────────────────────────────────────────────────
 PROTO_OUT="$BUILD_DIR/chiaki_lib/protobuf"
 TAKION_PROTO="$CHIAKI_NG_DIR/lib/protobuf/takion.proto"
 mkdir -p "$PROTO_OUT"
 
-NANOPB_GEN="$(python3 -c '
-import sys
-try:
-    import nanopb, os
-    gen = os.path.join(os.path.dirname(nanopb.__file__), "nanopb_generator.py")
-    if os.path.isfile(gen): print(gen)
-except: pass
-' 2>/dev/null)"
-
+NANOPB_GEN="$(python3 -c 'import sys; import nanopb, os; gen = os.path.join(os.path.dirname(nanopb.__file__), "nanopb_generator.py"); print(gen) if os.path.isfile(gen) else None' 2>/dev/null || true)"
 if [[ -z "$NANOPB_GEN" ]]; then
-    for candidate in \
-        "$CHIAKI_NG_DIR/third-party/nanopb/nanopb_generator.py" \
-        "$CHIAKI_NG_DIR/third-party/nanopb/generator/nanopb_generator.py"; do
-        if [[ -f "$candidate" ]]; then
-            NANOPB_GEN="$candidate"
-            break
-        fi
+    for candidate in "$CHIAKI_NG_DIR/third-party/nanopb/nanopb_generator.py" "$CHIAKI_NG_DIR/third-party/nanopb/generator/nanopb_generator.py"; do
+        if [[ -f "$candidate" ]]; then NANOPB_GEN="$candidate"; break; fi
     done
 fi
 
-python3 "$NANOPB_GEN" \
-    --output-dir="$PROTO_OUT" \
-    --proto-path="$CHIAKI_NG_DIR/lib/protobuf" \
-    "$TAKION_PROTO" 2>&1 | sed 's/^/  /'
+python3 "$NANOPB_GEN" --output-dir="$PROTO_OUT" --proto-path="$CHIAKI_NG_DIR/lib/protobuf" "$TAKION_PROTO" 2>/dev/null || true
 
 CHIAKI_PB_MAKE="$BUILD_DIR/chiaki_lib/protobuf/CMakeFiles/chiaki-pb.dir/build.make"
 if [[ -f "$CHIAKI_PB_MAKE" ]]; then
-    python3 << PYEOF
-path = "$CHIAKI_PB_MAKE"
-with open(path, "r", errors="replace") as f:
-    lines = f.readlines()
-changed = 0
-out = []
-for line in lines:
-    if line.startswith("\t") and "-E env" in line and "PATH=" in line:
-        out.append("\t@true  # recipe disabled: pre-generated by build-webos.sh\n")
-        changed += 1
-    else:
-        out.append(line)
-with open(path, "w") as f:
-    f.writelines(out)
-PYEOF
+    python3 -c "
+import sys
+with open('$CHIAKI_PB_MAKE', 'r', errors='replace') as f: lines = f.readlines()
+with open('$CHIAKI_PB_MAKE', 'w') as f:
+    f.writelines(['\t@true\n' if '\t' in l and '-E env' in l and 'PATH=' in l else l for l in lines])
+"
 fi
 
-echo ""
-echo "=== Building ==="
+# ── Building and Packaging ────────────────────────────────────────────────────
 cmake --build "$BUILD_DIR" -j"$NJOBS"
-
-echo ""
-echo "=== Packaging IPK ==="
 cmake --build "$BUILD_DIR" --target ipk
-
-echo ""
-echo "=== Done! ==="
-ls "$BUILD_DIR"/*.ipk 2>/dev/null || echo "(check $BUILD_DIR for output)"
+ls "$BUILD_DIR"/*.ipk 2>/dev/null || true

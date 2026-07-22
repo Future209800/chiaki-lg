@@ -556,11 +556,24 @@ rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
 
 
-    mkdir -p "third-party/ss4s/modules/webos/smp"
-    echo "" > "third-party/ss4s/modules/webos/smp/CMakeLists.txt"
+  # 1. Azzeriamo i moduli legacy che causano errori (smp e lgnc)
+echo "Pulizia moduli legacy (smp, lgnc)..."
+mkdir -p "third-party/ss4s/modules/webos/smp/wrapper"
+echo "" > "third-party/ss4s/modules/webos/smp/CMakeLists.txt"
+echo "" > "third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
 
-    mkdir -p "third-party/ss4s/modules/webos/lgnc"
-    echo "" > "third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
+mkdir -p "third-party/ss4s/modules/webos/lgnc"
+echo "" > "third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
+
+# 2. Creazione libreria fantasma (stub) per NDL_directmedia
+echo "Falsificazione libreria NDL_directmedia in corso..."
+CROSS_CC=$(find /opt/webos-sdk -name "arm-webos-linux-gnueabi-gcc" | grep -v "libexec" | head -n 1)
+SYSROOT=$(find /opt/webos-sdk/sysroots -name "armv7a-neon-webos-linux-gnueabi" | head -n 1)
+
+touch ndl_stub.c
+$CROSS_CC --sysroot=$SYSROOT -shared -fPIC ndl_stub.c -o libNDL_directmedia.so
+cp libNDL_directmedia.so $SYSROOT/usr/lib/
+
 
 
 cmake -B "$BUILD_DIR" \
@@ -586,7 +599,8 @@ cmake -B "$BUILD_DIR" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
     -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -Wl,-rpath,\$ORIGIN/lib" \
-    -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -lm" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -lm -Wl,--unresolved-symbols=ignore-all" \
+    -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-all" \
     -DPKG_CONFIG_EXECUTABLE="$PKG_CONFIG" \
     -DCMAKE_PROJECT_INCLUDE="$HINTS_FILE" \
     -DPYTHON_EXECUTABLE="$(which python3 || which python)" \

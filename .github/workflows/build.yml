@@ -35,6 +35,9 @@ jobs:
           wget -q "$DOWNLOAD_URL" -O ndk-installer.sh
           chmod +x ndk-installer.sh
           sudo ./ndk-installer.sh -y -d /opt/webos-sdk
+          
+          # TRUCCO PER I PERMESSI: Diventiamo proprietari di tutta la cartella per far funzionare 'find'
+          sudo chown -R $USER:$USER /opt/webos-sdk
 
       - name: Clona il codice sorgente di chiaki-ng
         run: |

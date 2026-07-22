@@ -44,6 +44,11 @@ jobs:
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
 
+      - name: Cerca librerie NDL nell'SDK (Diagnostica)
+        run: |
+          echo "Cerco file NDL nel SDK..."
+          find /opt/webos-sdk -name "*NDL*" -o -name "*ndl*"
+
       - name: Esecuzione script di compilazione autonomo
         run: |
           export TOOLCHAIN_DIR=/opt/webos-sdk

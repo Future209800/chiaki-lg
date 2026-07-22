@@ -140,7 +140,7 @@ build_opus() {
     fi
     pushd "$src"
     ./configure --host=arm-webos-linux-gnueabi --prefix="$OUR_STAGING" \
-        --enable-static --disable-shared --disable-doc --disable-extra-programs
+        --enable-static --disable-shared --disable-doc --disable-extra-programs --with-pic
     make -j"$NJOBS" && make install
     popd
 }

@@ -52,6 +52,11 @@ jobs:
       - name: Esecuzione script di compilazione autonomo
         run: |
           export TOOLCHAIN_DIR=/opt/webos-sdk
+          
+          # FORZIAMO UN SOLO CORE PER VEDERE L'ERRORE PULITO ALLA FINE
+          export CMAKE_BUILD_PARALLEL_LEVEL=1
+          export MAKEFLAGS="-j1"
+          
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 

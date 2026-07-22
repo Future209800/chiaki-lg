@@ -34,6 +34,7 @@ jobs:
       - name: Avvia lo script di build automatico
         run: |
           source /opt/webos-sdk/environment-setup-*
+          export TOOLCHAIN_DIR=/opt/webos-sdk
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 

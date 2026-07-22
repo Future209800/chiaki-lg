@@ -1,65 +1,91 @@
 #!/usr/bin/env bash
 # build-webos.sh — Cross-compile chiaki-webos for webOS TV
-# Usage: ./build-webos.sh [/path/to/chiaki-ng]
+# Riscritto e ottimizzato per la compatibilità nativa con webOS NDK (Yocto/OpenEmbedded)
 
-set -euo pipefail
+set -eo pipefail # Rimosso 'u' per tollerare le variabili vuote dell'ambiente Yocto
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHIAKI_NG_DIR="$(realpath "${1:-$SCRIPT_DIR/../chiaki-ng}")"
 BUILD_DIR="$SCRIPT_DIR/build-webos"
 OUR_STAGING="/tmp/webos-staging"
 
-# ── Validate toolchain ────────────────────────────────────────────────────────
-if [[ -z "${TOOLCHAIN_DIR:-}" ]]; then
-    echo "ERROR: Set TOOLCHAIN_DIR to your extracted webOS SDK root."
-    echo "  export TOOLCHAIN_DIR=~/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot"
+# ── 1. Validate toolchain & Source Yocto environment ──────────────────────────
+export TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-/opt/webos-sdk}"
+if [[ ! -d "$TOOLCHAIN_DIR" ]]; then
+    echo "ERROR: TOOLCHAIN_DIR non trovata in $TOOLCHAIN_DIR"
+    echo "Assicurati di aver installato l'NDK."
     exit 1
 fi
 
-TOOLCHAIN_FILE="$TOOLCHAIN_DIR/share/buildroot/toolchainfile.cmake"
-if [[ ! -f "$TOOLCHAIN_FILE" ]]; then
-    echo "ERROR: toolchainfile.cmake not found at $TOOLCHAIN_FILE"
+ENV_SETUP=$(ls "$TOOLCHAIN_DIR"/environment-setup-* 2>/dev/null | head -n 1)
+if [[ -z "$ENV_SETUP" ]]; then
+    echo "ERROR: Script environment-setup non trovato in $TOOLCHAIN_DIR"
+    exit 1
+fi
+source "$ENV_SETUP"
+
+TOOLCHAIN_FILE=$(find "$TOOLCHAIN_DIR" -name "OEToolchainConfig.cmake" | head -n 1)
+if [[ -z "$TOOLCHAIN_FILE" ]]; then
+    echo "ERROR: OEToolchainConfig.cmake non trovato in $TOOLCHAIN_DIR"
     exit 1
 fi
 
-SYSROOT="$TOOLCHAIN_DIR/arm-webos-linux-gnueabi/sysroot"
+# Yocto definisce il sysroot in questa variabile nativa
+SYSROOT="${OECORE_TARGET_SYSROOT}"
+if [[ -z "$SYSROOT" || ! -d "$SYSROOT" ]]; then
+    echo "ERROR: SYSROOT non trovato o variabile OECORE_TARGET_SYSROOT non impostata."
+    exit 1
+fi
 
-# ── Source buildroot environment ──────────────────────────────────────────────
-source "$TOOLCHAIN_DIR/environment-setup"
 export STAGING_DIR="$OUR_STAGING"
+mkdir -p "$OUR_STAGING/bin"
 
-# The webOS SDK prepends its own ARM-targeted Python to PATH.
-# nanopb_generator.py must run on the HOST, so prepend /usr/bin to
-# ensure the system python3 wins over the SDK cross-python.
-export PATH="/usr/bin:/usr/local/bin:$PATH"   # restore ours after environment-setup overwrites it
+# ── 2. The Auto-Wrapper Magic (Fix per compatibilità Yocto vs Buildroot) ──────
+# Yocto inietta il sysroot e le flag architetturali direttamente nella variabile $CC.
+# Buildroot invece le ha integrate nel compilatore stesso. 
+# Creiamo dei wrapper per comportarci come Buildroot senza sporcare le configurazioni.
 
-[[ -z "${CC:-}" ]]  && export CC="arm-webos-linux-gnueabi-gcc"
-[[ -z "${CXX:-}" ]] && export CXX="arm-webos-linux-gnueabi-g++"
+CLEAN_CC=$(echo "${CC:-arm-webos-linux-gnueabi-gcc}" | awk '{print $1}')
+CC_FLAGS=$(echo "${CC:-}" | cut -d' ' -f2-)
+CLEAN_CXX=$(echo "${CXX:-arm-webos-linux-gnueabi-g++}" | awk '{print $1}')
+CXX_FLAGS=$(echo "${CXX:-}" | cut -d' ' -f2-)
 
-CROSS_PREFIX="${CC%-gcc}-"
+REAL_CC_PATH=$(which "$CLEAN_CC")
+REAL_CXX_PATH=$(which "$CLEAN_CXX")
+
+# Mettiamo i nostri finti compilatori in cima al PATH
+export PATH="$OUR_STAGING/bin:/usr/bin:/usr/local/bin:$PATH"
+
+# Generiamo i wrapper che iniettano automaticamente le sysroot di Yocto
+cat > "$OUR_STAGING/bin/${CLEAN_CC}" << EOF
+#!/usr/bin/env bash
+exec "$REAL_CC_PATH" $CC_FLAGS "\$@"
+EOF
+chmod +x "$OUR_STAGING/bin/${CLEAN_CC}"
+
+cat > "$OUR_STAGING/bin/${CLEAN_CXX}" << EOF
+#!/usr/bin/env bash
+exec "$REAL_CXX_PATH" $CXX_FLAGS "\$@"
+EOF
+chmod +x "$OUR_STAGING/bin/${CLEAN_CXX}"
+
+CROSS_PREFIX="${CLEAN_CC%-gcc}-"
+export CC="${CLEAN_CC}"
+export CXX="${CLEAN_CXX}"
 export AR="${CROSS_PREFIX}ar"
 export STRIP="${CROSS_PREFIX}strip"
 export RANLIB="${CROSS_PREFIX}ranlib"
 
+# ── 3. Pkg-config e System settings ───────────────────────────────────────────
 SYSROOT_PKGCONFIG="$SYSROOT/usr/lib/pkgconfig"
 export PKG_CONFIG_PATH="$OUR_STAGING/lib/pkgconfig:$SYSROOT_PKGCONFIG"
 export PKG_CONFIG_LIBDIR="$OUR_STAGING/lib/pkgconfig:$SYSROOT_PKGCONFIG"
-# Set sysroot for system libs (SDL2 etc), but we'll strip it from staging paths via wrapper
 export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
 REAL_PKG_CONFIG=$(which "${CROSS_PREFIX}pkg-config" 2>/dev/null || which pkg-config)
 
-# Create a pkg-config wrapper that strips the sysroot prefix from any path
-# that points into our staging dir. cmake's FindPkgConfig prepends CMAKE_SYSROOT
-# to pkg-config output regardless of PKG_CONFIG_SYSROOT_DIR, so even absolute
-# paths like /tmp/webos-staging/include become /sysroot/tmp/webos-staging/include.
-# The wrapper removes the sysroot prefix from any token containing our staging path.
 PKG_CONFIG_WRAPPER="$OUR_STAGING/bin/pkg-config-wrapper"
-mkdir -p "$OUR_STAGING/bin"
-# Write wrapper with sysroot path baked in at script eval time.
-# Only strip $SYSROOT prefix when it precedes /tmp/webos-staging (our staging dir).
-# SDL2 and other sysroot library paths like $SYSROOT/usr/include must be left intact
-# so the cross-compiler can see them as sysroot-relative rather than host paths.
 SYSROOT_STAGING_PREFIX="$SYSROOT/tmp/webos-staging"
+
 cat > "$PKG_CONFIG_WRAPPER" << WRAPPER_EOF
 #!/usr/bin/env bash
 "$REAL_PKG_CONFIG" "\$@" | sed "s|${SYSROOT_STAGING_PREFIX}|/tmp/webos-staging|g"
@@ -72,7 +98,6 @@ echo "-- Staging:   $OUR_STAGING"
 echo "-- Sysroot:   $SYSROOT"
 echo ""
 
-mkdir -p "$OUR_STAGING"
 mkdir -p "$BUILD_DIR"
 NJOBS=$(nproc)
 
@@ -197,13 +222,11 @@ build_miniupnpc() {
 build_curl() {
     local ver="8.7.1"
     local src="/tmp/curl-$ver"
-    # WebSocket support (required by holepunch.c curl_ws_* calls) needs --enable-websockets.
-	# Rebuild if flag wasn't used in a prior build.
-	if [[ -f "$OUR_STAGING/lib/libcurl.a" ]] && \
-		grep -q "CURLOPT_WS_OPTIONS" "$OUR_STAGING/include/curl/curl.h" 2>/dev/null; then
-		echo "-- cURL: skip (WebSocket enabled)"; return
-	fi
-	[[ -f "$OUR_STAGING/lib/libcurl.a" ]] && echo "-- cURL: rebuilding to add --enable-websockets"
+    if [[ -f "$OUR_STAGING/lib/libcurl.a" ]] && \
+        grep -q "CURLOPT_WS_OPTIONS" "$OUR_STAGING/include/curl/curl.h" 2>/dev/null; then
+        echo "-- cURL: skip (WebSocket enabled)"; return
+    fi
+    [[ -f "$OUR_STAGING/lib/libcurl.a" ]] && echo "-- cURL: rebuilding to add --enable-websockets"
     echo "-- Building cURL $ver"
     if [[ ! -d "$src" ]]; then
         wget -qO "/tmp/curl-$ver.tar.gz" "https://curl.se/download/curl-$ver.tar.gz"
@@ -214,7 +237,7 @@ build_curl() {
         --host=arm-webos-linux-gnueabi --prefix="$OUR_STAGING" \
         --enable-static --disable-shared \
         --with-openssl="$OUR_STAGING" \
-		--enable-websockets \
+        --enable-websockets \
         --disable-ldap --disable-ldaps --disable-rtsp --disable-dict \
         --disable-telnet --disable-tftp --disable-pop3 --disable-imap \
         --disable-smb --disable-smtp --disable-gopher --disable-mqtt \
@@ -225,7 +248,6 @@ build_curl() {
 }
 
 # ── GF-Complete ───────────────────────────────────────────────────────────────
-# Jerasure requires GF-Complete for Galois Field arithmetic.
 build_gf_complete() {
     local src="/tmp/gf-complete-src"
     if [[ -f "$OUR_STAGING/lib/libgf_complete.a" ]]; then
@@ -265,7 +287,6 @@ build_jerasure() {
     fi
     echo "-- Building Jerasure 2.0 (manual compile)"
     if [[ ! -d "$src" ]]; then
-        # Try multiple sources — the v2.0 tag may not exist on all mirrors
         local dl_ok=0
         for url in \
             "https://github.com/ceph/jerasure/archive/refs/heads/master.tar.gz" \
@@ -289,7 +310,6 @@ build_jerasure() {
     local inc="$OUR_STAGING/include"
     local lib="$OUR_STAGING/lib"
 
-    # Copy headers — try include/, Headers/, or root
     for hdir in "$src/include" "$src/Headers" "$src"; do
         if ls "$hdir"/*.h &>/dev/null; then
             cp "$hdir"/*.h "$inc/"
@@ -302,13 +322,11 @@ build_jerasure() {
     mkdir -p "$obj_dir"
     local objects=()
 
-    # Find .c files — try src/, Examples/, or root (exclude test/example files)
     local search_dirs=("$src/src" "$src/Examples" "$src")
     for d in "${search_dirs[@]}"; do
         [[ -d "$d" ]] || continue
         for f in "$d"/*.c; do
             [[ -f "$f" ]] || continue
-            # Skip example/test files
             local base; base="$(basename "$f")"
             [[ "$base" == example* ]] && continue
             [[ "$base" == test* ]]    && continue
@@ -375,10 +393,6 @@ else
 fi
 
 # ── Patch all staging .pc files ───────────────────────────────────────────────
-# cmake's FindPkgConfig, when a toolchain sets CMAKE_SYSROOT, prepends the
-# sysroot to any path in a PkgConfig:: imported target's INTERFACE_INCLUDE_DIRS.
-# Fix: remove all variable-based path lines and hardcode absolute paths so
-# there is nothing relative for cmake to prefix.
 echo ""
 echo "=== Patching staging .pc files to use hardcoded absolute paths ==="
 for pc in "$OUR_STAGING"/lib/pkgconfig/*.pc; do
@@ -400,21 +414,13 @@ for pkg in json-c miniupnpc; do
 done
 
 # ── Write cmake helper module dir ─────────────────────────────────────────────
-# Provides a FindNanopb.cmake wrapper that:
-#   1. Delegates to nanopb's own find module (in third-party/nanopb/extra/)
-#   2. Creates the Nanopb::nanopb alias that chiaki-ng links against
-# This must run before cmake configure, and must be on CMAKE_MODULE_PATH so
-# cmake finds our wrapper instead of (or in addition to) the upstream one.
 CMAKE_MODULES_DIR="$SCRIPT_DIR/cmake"
 mkdir -p "$CMAKE_MODULES_DIR"
 cat > "$CMAKE_MODULES_DIR/FindNanopb.cmake" << 'FINDNANOPB_EOF'
-# Wrapper around nanopb's own FindNanopb.cmake.
-# Adds the Nanopb::nanopb alias that chiaki-ng expects.
 set(_nanopb_src "@NANOPB_SRC@")
 list(APPEND CMAKE_MODULE_PATH "${_nanopb_src}/extra")
 include("${_nanopb_src}/extra/FindNanopb.cmake" OPTIONAL RESULT_VARIABLE _found)
 if(NOT _found)
-    # Fallback: add nanopb as a subdirectory so it builds from source
     if(NOT TARGET nanopb)
         add_subdirectory("${_nanopb_src}" nanopb_build EXCLUDE_FROM_ALL)
     endif()
@@ -427,7 +433,6 @@ if(TARGET Nanopb::nanopb)
     set(NANOPB_FOUND TRUE)
 endif()
 FINDNANOPB_EOF
-# Bake the nanopb source path into the find module (can't use cmake vars at write time)
 sed -i "s|@NANOPB_SRC@|$CHIAKI_NG_DIR/third-party/nanopb|g" "$CMAKE_MODULES_DIR/FindNanopb.cmake"
 
 # ── Check chiaki-ng submodules ─────────────────────────────────────────────────
@@ -441,27 +446,17 @@ echo "-- ChiakiRegistInfo fields:"
 grep -E 'ps5|target|account_id|psn_' "$CHIAKI_NG_DIR/lib/include/chiaki/regist.h" 2>/dev/null | grep -v '//' | head -20 || true
 echo ""
 echo "=== Checking chiaki-ng submodules ==="
-# The nanopb submodule CMakeLists.txt must exist for cmake to build protobuf-nanopb-static.
-# nanopb_generator.py is needed separately (we run it ourselves to bypass the WSL/Windows
-# PATH parentheses bug in cmake's generated custom command).
-# Strategy: ensure the submodule CMakeLists exists for cmake, and install nanopb via pip
-# for the generator — pip nanopb is more reliable than git submodule on WSL/NTFS.
 
 if [[ ! -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
     echo "-- nanopb submodule CMakeLists.txt missing, attempting git init..."
     git -C "$CHIAKI_NG_DIR" submodule update --init third-party/nanopb 2>&1 | tail -5 || true
 fi
 
-if [[ -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
-    echo "-- nanopb submodule: OK (CMakeLists.txt present)"
-else
+if [[ ! -f "$CHIAKI_NG_DIR/third-party/nanopb/CMakeLists.txt" ]]; then
     echo "-- ERROR: nanopb submodule CMakeLists.txt missing and git init failed."
-    echo "   This is required for cmake to build the protobuf library."
-    echo "   Fix: cd '$CHIAKI_NG_DIR' && git submodule update --init third-party/nanopb"
     exit 1
 fi
 
-# Install nanopb via pip for the generator script (independent of submodule state)
 echo "-- Installing/verifying nanopb pip package (for generator)..."
 if python3 -c "import nanopb" 2>/dev/null; then
     echo "-- nanopb pip package: already installed"
@@ -469,47 +464,31 @@ else
     pip3 install nanopb --break-system-packages -q 2>&1 | tail -3 || \
     pip3 install nanopb -q 2>&1 | tail -3 || true
     python3 -c "import nanopb; print('-- nanopb pip package: OK')" 2>/dev/null \
-        || echo "-- nanopb pip package: install failed (will try submodule generator)"
+        || echo "-- nanopb pip package: install failed"
 fi
 
 # ── Patch chiaki-ng sources for webOS compatibility ──────────────────────────
 echo ""
 echo "=== Patching chiaki-ng sources for webOS ==="
 
-# pthread_clockjoin_np was added in glibc 2.30.
-# webOS uses an older glibc that only has pthread_timedjoin_np (uses CLOCK_REALTIME).
-# The difference: clockjoin lets you pick the clock; timedjoin always uses CLOCK_REALTIME.
-# For our purposes (waiting on a thread with a timeout) this is functionally identical.
 THREAD_C="$CHIAKI_NG_DIR/lib/src/thread.c"
 if grep -q 'pthread_clockjoin_np' "$THREAD_C" 2>/dev/null; then
-    # Replace:  pthread_clockjoin_np(thread->thread, retval, CLOCK_MONOTONIC, &timeout)
-    # With:     pthread_timedjoin_np(thread->thread, retval, &timeout)
     sed -i 's/pthread_clockjoin_np(\(.*\), CLOCK_MONOTONIC, \(&timeout\))/pthread_timedjoin_np(\1, \2)/' \
         "$THREAD_C"
     if grep -q 'pthread_clockjoin_np' "$THREAD_C"; then
-        echo "-- WARNING: pthread_clockjoin_np patch may have failed, checking manually..."
-        grep -n 'pthread_clockjoin_np\|pthread_timedjoin_np' "$THREAD_C" | sed 's/^/  /'
+        echo "-- WARNING: pthread_clockjoin_np patch may have failed"
     else
         echo "-- thread.c: patched pthread_clockjoin_np → pthread_timedjoin_np"
     fi
 else
-    echo "-- thread.c: no pthread_clockjoin_np (already patched or different version)"
+    echo "-- thread.c: no pthread_clockjoin_np"
 fi
 
 # ── Generate cmake toolchain extension ────────────────────────────────────────
-# We use CMAKE_PROJECT_INCLUDE to inject fixes early in configuration:
-#   1. CURL::libcurl imported target (find_package(CURL) may not create it)
-#   2. Nanopb::nanopb imported target + cmake module path
-#   3. A cmake_language(DEFER) block that fixes PkgConfig:: target include dirs
-#      AFTER chiaki-ng's CMakeLists.txt has created them via pkg_search_module.
-#      DEFER runs at the end of the top-level CMakeLists.txt processing.
 HINTS_FILE="$BUILD_DIR/chiaki_hints.cmake"
 mkdir -p "$BUILD_DIR"
 
-# Write the file using a sentinel that won't expand shell variables,
-# then sed in the actual paths afterwards.
 cat > "$HINTS_FILE" << 'ENDOFHINTS'
-# ── CURL ──────────────────────────────────────────────────────────────────────
 if(NOT TARGET CURL::libcurl)
     add_library(CURL::libcurl STATIC IMPORTED GLOBAL)
     set_target_properties(CURL::libcurl PROPERTIES
@@ -523,12 +502,10 @@ if(NOT TARGET CURL::libcurl)
     set(CURL_VERSION_STRING "8.7.1")
 endif()
 
-# ── Force host Python for nanopb generator ────────────────────────────────────
 set(PYTHON_EXECUTABLE  "/usr/bin/python3" CACHE FILEPATH "Host Python" FORCE)
 set(Python3_EXECUTABLE "/usr/bin/python3" CACHE FILEPATH "Host Python 3" FORCE)
 set(Python_EXECUTABLE  "/usr/bin/python3" CACHE FILEPATH "Host Python" FORCE)
 
-# ── GF-Complete ───────────────────────────────────────────────────────────────
 if(NOT TARGET GF-Complete::GF-Complete)
     add_library(GF-Complete::GF-Complete STATIC IMPORTED GLOBAL)
     set_target_properties(GF-Complete::GF-Complete PROPERTIES
@@ -537,7 +514,6 @@ if(NOT TARGET GF-Complete::GF-Complete)
     )
 endif()
 
-# ── Jerasure ──────────────────────────────────────────────────────────────────
 if(NOT TARGET Jerasure::Jerasure)
     add_library(Jerasure::Jerasure STATIC IMPORTED GLOBAL)
     set_target_properties(Jerasure::Jerasure PROPERTIES
@@ -547,13 +523,7 @@ if(NOT TARGET Jerasure::Jerasure)
     )
 endif()
 
-# ── Fix PkgConfig:: target include dirs after pkg_search_module runs ──────────
-# cmake_language(DEFER) executes at the end of the directory scope that issued it.
-# By the time it runs, all pkg_search_module() calls in chiaki-ng's lib/
-# CMakeLists.txt will have created PkgConfig::json-c and PkgConfig::MINIUPNPC,
-# and we overwrite their (sysroot-corrupted) INTERFACE_INCLUDE_DIRECTORIES.
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL cmake_language EVAL CODE [[
-    # Fix sysroot-corrupted include dirs on PkgConfig imported targets
     foreach(_t PkgConfig::json-c PkgConfig::MINIUPNPC PkgConfig::miniupnpc PkgConfig::libevent PkgConfig::LIBEVENT PkgConfig::libevent_core PkgConfig::libevent_pthreads)
         if(TARGET ${_t})
             set_property(TARGET ${_t} PROPERTY
@@ -561,8 +531,6 @@ cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL cmake_language EVAL CO
             message(STATUS "chiaki_hints: fixed include dir on ${_t}")
         endif()
     endforeach()
-    # nanopb's CMakeLists creates target 'nanopb' (unnamespaced).
-    # chiaki-ng links against 'Nanopb::nanopb' (namespaced alias).
     if(TARGET nanopb AND NOT TARGET Nanopb::nanopb)
         add_library(Nanopb::nanopb ALIAS nanopb)
         message(STATUS "chiaki_hints: created Nanopb::nanopb alias")
@@ -574,29 +542,19 @@ sed -i "s|@@STAGING@@|$OUR_STAGING|g"          "$HINTS_FILE"
 sed -i "s|@@NANOPB@@|$CHIAKI_NG_DIR/third-party/nanopb|g" "$HINTS_FILE"
 
 echo ""
-echo "=== Installing host protobuf Python package (needed by nanopb generator) ==="
-if python3 -c "import google.protobuf" 2>/dev/null; then
-    python3 -c "import google.protobuf; print('-- protobuf: already installed', google.protobuf.__version__)"
-else
+echo "=== Installing host protobuf Python package ==="
+if ! python3 -c "import google.protobuf" 2>/dev/null; then
     pip3 install protobuf --break-system-packages 2>&1 | tail -3 || \
     python3 -m pip install protobuf --break-system-packages 2>&1 | tail -3 || true
-    python3 -c "import google.protobuf; print('-- protobuf: installed', google.protobuf.__version__)" \
-        || { echo "-- protobuf STILL MISSING — trying apt"; sudo apt-get install -y python3-protobuf 2>&1 | tail -3 || true; }
 fi
-
-
 
 echo ""
 echo "=== Configuring chiaki-webos ==="
 set -x  # trace all commands from here so failures are visible
 
-# Wipe cmake cache to force fresh pkg-config reads and find_package calls.
 rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
 
-# PKG_CONFIG_SYSROOT_DIR="" on the cmake command line prevents cmake's own
-# pkg-config invocations from prepending the sysroot to our absolute paths.
-# SDL2 and other sysroot libs are found via CMAKE_FIND_ROOT_PATH instead.
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -638,18 +596,11 @@ cmake -B "$BUILD_DIR" \
 
 echo ""
 echo "=== Pre-generating takion.pb after configure ==="
-# The cmake-generated nanopb custom command sets PATH containing Windows paths
-# like "Program Files (x86)" with literal parentheses, which crash any shell.
-# We generate takion.pb ourselves and stamp the outputs newer than takion.proto
-# so make skips the custom command as already up-to-date.
 PROTO_OUT="$BUILD_DIR/chiaki_lib/protobuf"
 TAKION_PROTO="$CHIAKI_NG_DIR/lib/protobuf/takion.proto"
 mkdir -p "$PROTO_OUT"
 
-# Find nanopb_generator.py — prefer pip-installed version, fall back to submodule
 NANOPB_GEN=""
-
-# 1. Try pip-installed nanopb package
 NANOPB_GEN="$(python3 -c '
 import sys
 try:
@@ -659,7 +610,6 @@ try:
 except: pass
 ' 2>/dev/null)"
 
-# 2. Try submodule locations
 if [[ -z "$NANOPB_GEN" ]]; then
     for candidate in \
         "$CHIAKI_NG_DIR/third-party/nanopb/nanopb_generator.py" \
@@ -673,7 +623,6 @@ fi
 
 if [[ -z "$NANOPB_GEN" ]]; then
     echo "-- ERROR: Cannot find nanopb_generator.py anywhere. Aborting."
-    echo "   Fix: cd '$CHIAKI_NG_DIR' && git submodule update --init --recursive"
     exit 1
 fi
 
@@ -683,20 +632,12 @@ python3 "$NANOPB_GEN" \
     "$TAKION_PROTO" 2>&1 | sed 's/^/  /'
 
 if [[ -f "$PROTO_OUT/takion.pb.c" && -f "$PROTO_OUT/takion.pb.h" ]]; then
-    echo "-- takion.pb.c: $(wc -l < "$PROTO_OUT/takion.pb.c") lines — ready"
+    echo "-- takion.pb.c: ready"
 else
-    echo "-- ERROR: takion.pb generation failed! See output above."
-    python3 -c "import google.protobuf; print('  protobuf ok:', google.protobuf.__version__)" \
-        2>/dev/null || echo "  protobuf missing — run: pip3 install protobuf --break-system-packages"
+    echo "-- ERROR: takion.pb generation failed!"
     exit 1
 fi
 
-# ── Patch generated build.make to neutralise the broken cmake custom command ──
-# cmake's chiaki-pb target embeds the full WSL PATH (including Windows entries
-# like "Program\ Files\ (x86)") into a recipe line.  Make passes this verbatim
-# to /bin/sh -c; the unescaped ( causes "Syntax error: ( unexpected".
-# Fix: replace every recipe line containing "-E env" and "PATH=" with @true.
-# We've already generated the output files above, so the no-op is correct.
 CHIAKI_PB_MAKE="$BUILD_DIR/chiaki_lib/protobuf/CMakeFiles/chiaki-pb.dir/build.make"
 if [[ -f "$CHIAKI_PB_MAKE" ]]; then
     python3 << PYEOF
@@ -713,11 +654,8 @@ for line in lines:
         out.append(line)
 with open(path, "w") as f:
     f.writelines(out)
-print(f"-- Patched {changed} recipe line(s) in build.make" if changed
-      else "-- WARNING: no matching recipe lines found in build.make")
+print(f"-- Patched {changed} recipe line(s) in build.make" if changed else "")
 PYEOF
-else
-    echo "-- WARNING: $CHIAKI_PB_MAKE not found after configure"
 fi
 
 echo ""

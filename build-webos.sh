@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build-webos.sh — Cross-compile chiaki-webos for webOS TV
-# Versione Ottimizzata e Blindata: compatibilità nativa Yocto + bypass librerie NDL/smp
+# Versione Definitiva: con il blocco "HACK" originale funzionante ripristinato
 
 set -eo pipefail
 
@@ -281,26 +281,37 @@ sed -i "s|@@STAGING@@|$OUR_STAGING|g" "$HINTS_FILE"
 
 if ! python3 -c "import google.protobuf" 2>/dev/null; then pip3 install protobuf --break-system-packages 2>/dev/null || true; fi
 
-# ── HACK SDK OPEN SOURCE ──────────────────────────────────────────────────────
-echo "=== Pulizia moduli legacy (smp, lgnc) ==="
-mkdir -p "$SCRIPT_DIR/third-party/ss4s/modules/webos/smp/wrapper"
-echo "" > "$SCRIPT_DIR/third-party/ss4s/modules/webos/smp/CMakeLists.txt"
-echo "" > "$SCRIPT_DIR/third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
 
-mkdir -p "$SCRIPT_DIR/third-party/ss4s/modules/webos/lgnc"
-echo "" > "$SCRIPT_DIR/third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
+# ── Configuring chiaki-webos & HACK (ESATTAMENTE COME IL TUO BACKUP) ──────────
+echo ""
+echo "=== Configuring chiaki-webos ==="
+set -x  # trace all commands from here so failures are visible
 
-echo "=== Falsificazione libreria NDL_directmedia in corso... ==="
-CROSS_CC=$(find /opt/webos-sdk -name "arm-webos-linux-gnueabi-gcc" | grep -v "libexec" | head -n 1)
-SYSROOT_FIND=$(find /opt/webos-sdk/sysroots -name "armv7a-neon-webos-linux-gnueabi" | head -n 1)
-
-touch ndl_stub.c
-$CROSS_CC --sysroot=$SYSROOT_FIND -shared -fPIC ndl_stub.c -o libNDL_directmedia.so
-cp libNDL_directmedia.so $SYSROOT_FIND/usr/lib/
-
-# ── Configuring chiaki-webos ──────────────────────────────────────────────────
 rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
+
+# 1. Azzeriamo i moduli legacy che causano errori (smp e lgnc)
+echo "Pulizia moduli legacy (smp, lgnc)..."
+mkdir -p "third-party/ss4s/modules/webos/smp/wrapper"
+rm -f "third-party/ss4s/modules/webos/smp/CMakeLists.txt"
+echo "" > "third-party/ss4s/modules/webos/smp/CMakeLists.txt"
+
+# Usiamo un dummy C++ al posto di un file vuoto, così aggiriamo anche i controlli del compilatore
+rm -f "third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
+echo "int dummy_smp() { return 0; }" > "third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
+
+mkdir -p "third-party/ss4s/modules/webos/lgnc"
+rm -f "third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
+echo "" > "third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
+
+# 2. Creazione libreria fantasma (stub) per NDL_directmedia
+echo "Falsificazione libreria NDL_directmedia in corso..."
+CROSS_CC=$(find /opt/webos-sdk -name "arm-webos-linux-gnueabi-gcc" | grep -v "libexec" | head -n 1)
+SYSROOT=$(find /opt/webos-sdk/sysroots -name "armv7a-neon-webos-linux-gnueabi" | head -n 1)
+
+touch ndl_stub.c
+$CROSS_CC --sysroot=$SYSROOT -shared -fPIC ndl_stub.c -o libNDL_directmedia.so
+cp libNDL_directmedia.so $SYSROOT/usr/lib/
 
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
@@ -324,15 +335,15 @@ cmake -B "$BUILD_DIR" \
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-    -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT_FIND/usr/lib -Wl,-rpath,\$ORIGIN/lib -Wl,--unresolved-symbols=ignore-all" \
-    -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT_FIND/usr/lib -lm -Wl,--unresolved-symbols=ignore-all" \
+    -DCMAKE_EXE_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -Wl,-rpath,\$ORIGIN/lib -Wl,--unresolved-symbols=ignore-all" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-L$OUR_STAGING/lib -L$SYSROOT/usr/lib -lm -Wl,--unresolved-symbols=ignore-all" \
     -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-all" \
     -DPKG_CONFIG_EXECUTABLE="$PKG_CONFIG" \
     -DCMAKE_PROJECT_INCLUDE="$HINTS_FILE" \
     -DPYTHON_EXECUTABLE="$(which python3 || which python)" \
     -DPython3_EXECUTABLE="$(which python3 || which python)" \
     -DNDL_DIRECTMEDIA_FOUND=ON \
-    -DNDL_DIRECTMEDIA_INCLUDE_DIRS="$SYSROOT_FIND/usr/include" \
+    -DNDL_DIRECTMEDIA_INCLUDE_DIRS="$SYSROOT/usr/include" \
     -DNDL_DIRECTMEDIA_LIBRARIES="NDL_directmedia" \
     -DSS4S_MODULE_LIBRARY_OUTPUT_DIRECTORY="$BUILD_DIR/lib" \
     -DSS4S_ENABLE_TESTS=OFF \

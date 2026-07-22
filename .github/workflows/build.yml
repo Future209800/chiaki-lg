@@ -44,6 +44,12 @@ jobs:
           # 2° Trucco: Diamo allo script il nome esatto del file environment-setup
           sudo ln -s /opt/webos-sdk/environment-setup-* /opt/webos-sdk/environment-setup
           
+          # 3° Trucco: Inizializziamo la variabile che fa andare in crash lo script e togliamo la modalità paranoia a bash
+          export CCACHE_PATH=""
+          export PKG_CONFIG_PATH=""
+          sed -i 's/set -eu/set -e/g' build-webos.sh
+          sed -i 's/set -u//g' build-webos.sh
+          
           # Avviamo finalmente lo script
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng

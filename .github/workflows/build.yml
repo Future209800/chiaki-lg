@@ -15,18 +15,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config wget git curl \
-            python3 python3-pip python3-protobuf protobuf-compiler \
+            python3 python3-pip protobuf-compiler \
             nasm yasm libtool autoconf automake nodejs npm
           sudo npm install -g @webos-tools/cli
+          # IL FIX: Forziamo la versione 3.x di protobuf per evitare il crash di nanopb
+          pip3 install "protobuf<4"
 
       - name: Installa webOS NDK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Tentativo tramite API autenticata per eludere il blocco dell'IP
           DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/webosbrew/meta-lg-webos-ndk/releases/latest | grep "browser_download_url.*\.sh" | cut -d '"' -f 4 | head -n 1)
           
-          # 2. Paracadute di sicurezza: se fallisce, usa il link diretto e stabile
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "API fallita, uso il link di download diretto..."
             DOWNLOAD_URL="https://github.com/webosbrew/meta-lg-webos-ndk/releases/latest/download/meta-webos-smack-x86_64-armv7a-neon-webos-linux-gnueabi-toolchain-1.0.sh"
@@ -36,13 +36,26 @@ jobs:
           chmod +x ndk-installer.sh
           sudo ./ndk-installer.sh -y -d /opt/webos-sdk
           
-          # TRUCCO PER I PERMESSI: Diventiamo proprietari di tutta la cartella per far funzionare 'find'
+          # Diventiamo proprietari di tutta la cartella per far funzionare 'find'
           sudo chown -R $USER:$USER /opt/webos-sdk
 
       - name: Clona il codice sorgente di chiaki-ng
         run: |
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
+
+      - name: Crea stub per librerie proprietarie LG
+        run: |
+          # Creiamo il finto file pkg-config per accontentare CMake
+          mkdir -p /tmp/webos-staging/lib/pkgconfig
+          
+          cat << 'EOF' > /tmp/webos-staging/lib/pkgconfig/libplayerAPIs.pc
+          Name: libplayerAPIs
+          Description: LG Proprietary Player APIs Stub
+          Version: 1.0.0
+          Libs:
+          Cflags:
+          EOF
 
       - name: Esecuzione script di compilazione autonomo
         run: |

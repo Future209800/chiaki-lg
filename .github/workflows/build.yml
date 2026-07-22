@@ -1,75 +1,39 @@
-name: Build webOS IPK (via Script Autonomo)
+name: Build webOS IPK (Docker Environment)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    # La magia: avviamo il processo dentro il container ufficiale di sviluppo LG
+    container:
+      image: ghcr.io/webosbrew/meta-lg-webos-ndk:latest
 
     steps:
       - name: Checkout del codice
         uses: actions/checkout@v4
 
-      - name: Installa dipendenze base
+      - name: Installa dipendenze nel container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake make pkg-config wget git python3 npm curl protobuf-compiler python3-protobuf
-
-      - name: Installa ares-cli (LG Tools)
-        run: sudo npm install -g @webos-tools/cli
-
-      - name: Installa webOS NDK
-        run: |
-          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/webosbrew/meta-lg-webos-ndk/releases/latest | grep "browser_download_url.*\.sh" | cut -d '"' -f 4 | head -n 1)
-          wget -q $DOWNLOAD_URL -O ndk-installer.sh
-          chmod +x ndk-installer.sh
-          ./ndk-installer.sh -y -d /opt/webos-sdk
+          apt-get update
+          apt-get install -y curl wget git python3-pip protobuf-compiler python3-protobuf
+          # Installiamo NodeJS e ares-cli per impacchettare l'IPK alla fine
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y nodejs
+          npm install -g @webos-tools/cli
 
       - name: Prepara il codice originale di chiaki-ng
         run: |
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
 
-      - name: Esegui build-webos.sh (Inception Environment)
+      - name: Compilazione tramite script
         run: |
-          # 1. Definiamo i percorsi reali
-          REAL_SYSROOT="/opt/webos-sdk/sysroots/armv7a-neon-webos-linux-gnueabi"
-          REAL_BIN="/opt/webos-sdk/sysroots/x86_64-webossdk-linux/usr/bin/arm-webos-linux-gnueabi"
-
-          # 2. Usiamo sed per correggere i difetti base dello script senza stravolgerlo
-          sed -i 's/set -euo pipefail/set -eo pipefail/g' build-webos.sh
-          sed -i "s|SYSROOT=\"\$TOOLCHAIN_DIR/arm-webos-linux-gnueabi/sysroot\"|SYSROOT=\"$REAL_SYSROOT\"|g" build-webos.sh
-          sed -i 's/CROSS_PREFIX="${CC%-gcc}-"/CROSS_PREFIX="arm-webos-linux-gnueabi-"/g' build-webos.sh
-
-          # 3. Creiamo i WRAPPER: finti compilatori che iniettano il sysroot LG di nascosto
-          sudo tee /usr/local/bin/arm-webos-linux-gnueabi-gcc <<EOF >/dev/null
-          #!/bin/bash
-          exec $REAL_BIN/arm-webos-linux-gnueabi-gcc --sysroot=$REAL_SYSROOT "\$@"
-          EOF
-          
-          sudo tee /usr/local/bin/arm-webos-linux-gnueabi-g++ <<EOF >/dev/null
-          #!/bin/bash
-          exec $REAL_BIN/arm-webos-linux-gnueabi-g++ --sysroot=$REAL_SYSROOT "\$@"
-          EOF
-          
-          sudo chmod +x /usr/local/bin/arm-webos-linux-gnueabi-gcc
-          sudo chmod +x /usr/local/bin/arm-webos-linux-gnueabi-g++
-
-          # 4. Colleghiamo il resto degli strumenti
-          for tool in ar nm ranlib strip ld pkg-config; do
-              sudo ln -sf $REAL_BIN/arm-webos-linux-gnueabi-$tool /usr/local/bin/arm-webos-linux-gnueabi-$tool
-          done
-
-          # 5. Assecondiamo le richieste di percorsi e cartelle dello script
+          # Il container ha già il kit installato in /opt/webos-sdk, dobbiamo solo dichiararlo
           export TOOLCHAIN_DIR=/opt/webos-sdk
-          REAL_TOOLCHAIN=$(find /opt/webos-sdk -name "OEToolchainConfig.cmake" | head -n 1)
-          sudo mkdir -p /opt/webos-sdk/share/buildroot
-          sudo ln -sf $REAL_TOOLCHAIN /opt/webos-sdk/share/buildroot/toolchainfile.cmake
-          sudo ln -sf /opt/webos-sdk/environment-setup-* /opt/webos-sdk/environment-setup
-
-          # 6. Esecuzione script
-          export CCACHE_PATH=""
+          source /opt/webos-sdk/environment-setup-*
+          
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 

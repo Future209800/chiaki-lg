@@ -33,18 +33,22 @@ jobs:
 
       - name: Avvia lo script di build automatico
         run: |
-          # Definiamo la cartella base come preteso dallo script
+          source /opt/webos-sdk/environment-setup-*
           export TOOLCHAIN_DIR=/opt/webos-sdk
           
-          # 1° Trucco: Diamo allo script il toolchainfile.cmake che cerca
+          # 1° Trucco: Pulizia delle variabili CC e CXX per non far impazzire lo script
+          export CC=$(echo $CC | awk '{print $1}')
+          export CXX=$(echo $CXX | awk '{print $1}')
+          
+          # 2° Trucco: Diamo allo script il toolchainfile.cmake che cerca
           REAL_TOOLCHAIN=$(find /opt/webos-sdk -name "OEToolchainConfig.cmake" | head -n 1)
           sudo mkdir -p /opt/webos-sdk/share/buildroot
           sudo ln -s $REAL_TOOLCHAIN /opt/webos-sdk/share/buildroot/toolchainfile.cmake
           
-          # 2° Trucco: Diamo allo script il nome esatto del file environment-setup
+          # 3° Trucco: Diamo allo script il nome esatto del file environment-setup
           sudo ln -s /opt/webos-sdk/environment-setup-* /opt/webos-sdk/environment-setup
           
-          # 3° Trucco: Inizializziamo la variabile che fa andare in crash lo script e togliamo la modalità paranoia a bash
+          # 4° Trucco: Inizializziamo la variabile CCACHE e togliamo la paranoia di Bash
           export CCACHE_PATH=""
           export PKG_CONFIG_PATH=""
           sed -i 's/set -eu/set -e/g' build-webos.sh

@@ -1,39 +1,48 @@
-name: Build webOS IPK (Docker Environment)
+name: Build webOS IPK (Full Dependencies)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    # La magia: avviamo il processo dentro il container ufficiale di sviluppo LG
-    container:
-      image: ghcr.io/webosbrew/meta-lg-webos-ndk:latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout del codice
         uses: actions/checkout@v4
 
-      - name: Installa dipendenze nel container
+      - name: Installa arsenale di compilazione audio/video
         run: |
-          apt-get update
-          apt-get install -y curl wget git python3-pip protobuf-compiler python3-protobuf
-          # Installiamo NodeJS e ares-cli per impacchettare l'IPK alla fine
-          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-          apt-get install -y nodejs
-          npm install -g @webos-tools/cli
+          sudo apt-get update
+          # Aggiungiamo nasm, yasm, libtool e autoconf: vitali per compilare FFmpeg e OpenSSL
+          sudo apt-get install -y build-essential cmake pkg-config wget git curl \
+            python3 python3-pip python3-protobuf protobuf-compiler \
+            nasm yasm libtool autoconf automake nodejs npm
+          sudo npm install -g @webos-tools/cli
+
+      - name: Installa webOS NDK
+        run: |
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/webosbrew/meta-lg-webos-ndk/releases/latest | grep "browser_download_url.*\.sh" | cut -d '"' -f 4 | head -n 1)
+          wget -q $DOWNLOAD_URL -O ndk-installer.sh
+          chmod +x ndk-installer.sh
+          ./ndk-installer.sh -y -d /opt/webos-sdk
 
       - name: Prepara il codice originale di chiaki-ng
         run: |
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
 
-      - name: Compilazione tramite script
+      - name: Prepara l'ambiente e avvia lo script
         run: |
-          # Il container ha già il kit installato in /opt/webos-sdk, dobbiamo solo dichiararlo
           export TOOLCHAIN_DIR=/opt/webos-sdk
           source /opt/webos-sdk/environment-setup-*
           
+          # Ricreiamo il file che lo script esige di trovare per il toolchain
+          sudo mkdir -p /opt/webos-sdk/share/buildroot
+          REAL_TOOLCHAIN=$(find /opt/webos-sdk -name "OEToolchainConfig.cmake" | head -n 1)
+          sudo ln -sf $REAL_TOOLCHAIN /opt/webos-sdk/share/buildroot/toolchainfile.cmake
+          
+          # Via alla compilazione!
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 

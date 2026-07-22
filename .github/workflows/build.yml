@@ -14,7 +14,6 @@ jobs:
       - name: Installa arsenale di compilazione audio/video
         run: |
           sudo apt-get update
-          # Aggiungiamo nasm, yasm, libtool e autoconf: vitali per compilare FFmpeg e OpenSSL
           sudo apt-get install -y build-essential cmake pkg-config wget git curl \
             python3 python3-pip python3-protobuf protobuf-compiler \
             nasm yasm libtool autoconf automake nodejs npm
@@ -37,7 +36,10 @@ jobs:
           export TOOLCHAIN_DIR=/opt/webos-sdk
           source /opt/webos-sdk/environment-setup-*
           
-          # Ricreiamo il file che lo script esige di trovare per il toolchain
+          # 1° Trucco: Diamo allo script il nome esatto del file environment-setup
+          sudo ln -sf /opt/webos-sdk/environment-setup-* /opt/webos-sdk/environment-setup
+          
+          # 2° Trucco: Ricreiamo il file toolchain che lo script esige
           sudo mkdir -p /opt/webos-sdk/share/buildroot
           REAL_TOOLCHAIN=$(find /opt/webos-sdk -name "OEToolchainConfig.cmake" | head -n 1)
           sudo ln -sf $REAL_TOOLCHAIN /opt/webos-sdk/share/buildroot/toolchainfile.cmake

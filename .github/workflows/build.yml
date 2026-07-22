@@ -44,19 +44,6 @@ jobs:
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
 
-      - name: Crea stub per librerie proprietarie LG
-        run: |
-          # Creiamo il finto file pkg-config per accontentare CMake
-          mkdir -p /tmp/webos-staging/lib/pkgconfig
-          
-          cat << 'EOF' > /tmp/webos-staging/lib/pkgconfig/libplayerAPIs.pc
-          Name: libplayerAPIs
-          Description: LG Proprietary Player APIs Stub
-          Version: 1.0.0
-          Libs:
-          Cflags:
-          EOF
-
       - name: Esecuzione script di compilazione autonomo
         run: |
           export TOOLCHAIN_DIR=/opt/webos-sdk

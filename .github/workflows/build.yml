@@ -1,4 +1,4 @@
-name: Build webOS IPK (Full Dependencies)
+name: Build webOS IPK
 
 on:
   workflow_dispatch:
@@ -8,10 +8,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout del codice
+      - name: Checkout del tuo repository
         uses: actions/checkout@v4
 
-      - name: Installa arsenale di compilazione audio/video
+      - name: Installa dipendenze di sistema e codec audio/video
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config wget git curl \
@@ -24,31 +24,20 @@ jobs:
           DOWNLOAD_URL=$(curl -s https://api.github.com/repos/webosbrew/meta-lg-webos-ndk/releases/latest | grep "browser_download_url.*\.sh" | cut -d '"' -f 4 | head -n 1)
           wget -q $DOWNLOAD_URL -O ndk-installer.sh
           chmod +x ndk-installer.sh
-          ./ndk-installer.sh -y -d /opt/webos-sdk
+          sudo ./ndk-installer.sh -y -d /opt/webos-sdk
 
-      - name: Prepara il codice originale di chiaki-ng
+      - name: Clona il codice sorgente di chiaki-ng
         run: |
           cd ..
           git clone --recursive https://github.com/streetpea/chiaki-ng.git
 
-      - name: Prepara l'ambiente e avvia lo script
+      - name: Esecuzione script di compilazione autonomo
         run: |
           export TOOLCHAIN_DIR=/opt/webos-sdk
-          source /opt/webos-sdk/environment-setup-*
-          
-          # 1° Trucco: Diamo allo script il nome esatto del file environment-setup
-          sudo ln -sf /opt/webos-sdk/environment-setup-* /opt/webos-sdk/environment-setup
-          
-          # 2° Trucco: Ricreiamo il file toolchain che lo script esige
-          sudo mkdir -p /opt/webos-sdk/share/buildroot
-          REAL_TOOLCHAIN=$(find /opt/webos-sdk -name "OEToolchainConfig.cmake" | head -n 1)
-          sudo ln -sf $REAL_TOOLCHAIN /opt/webos-sdk/share/buildroot/toolchainfile.cmake
-          
-          # Via alla compilazione!
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 
-      - name: Salva il file .ipk
+      - name: Upload del file .ipk
         uses: actions/upload-artifact@v4
         with:
           name: chiaki-lg-ipk

@@ -33,16 +33,18 @@ jobs:
 
       - name: Avvia lo script di build automatico
         run: |
-          source /opt/webos-sdk/environment-setup-*
+          # Definiamo la cartella base come preteso dallo script
           export TOOLCHAIN_DIR=/opt/webos-sdk
           
-          # Cerchiamo il nostro file toolchain reale
+          # 1° Trucco: Diamo allo script il toolchainfile.cmake che cerca
           REAL_TOOLCHAIN=$(find /opt/webos-sdk -name "OEToolchainConfig.cmake" | head -n 1)
-          
-          # Creiamo il percorso falso preteso dallo script e facciamo il collegamento
           sudo mkdir -p /opt/webos-sdk/share/buildroot
           sudo ln -s $REAL_TOOLCHAIN /opt/webos-sdk/share/buildroot/toolchainfile.cmake
           
+          # 2° Trucco: Diamo allo script il nome esatto del file environment-setup
+          sudo ln -s /opt/webos-sdk/environment-setup-* /opt/webos-sdk/environment-setup
+          
+          # Avviamo finalmente lo script
           chmod +x build-webos.sh
           ./build-webos.sh ../chiaki-ng
 

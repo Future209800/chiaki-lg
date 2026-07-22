@@ -555,9 +555,13 @@ set -x  # trace all commands from here so failures are visible
 rm -f "$BUILD_DIR/CMakeCache.txt"
 rm -rf "$BUILD_DIR/CMakeFiles"
 
-# Azzeriamo il file sorgente nel percorso corretto del tuo repository (chiaki-lg)
-mkdir -p "third-party/ss4s/modules/webos/smp/wrapper"
-echo "" > "third-party/ss4s/modules/webos/smp/wrapper/StarfishMediaAPIs_C.cpp"
+
+    mkdir -p "third-party/ss4s/modules/webos/smp"
+    echo "" > "third-party/ss4s/modules/webos/smp/CMakeLists.txt"
+
+    mkdir -p "third-party/ss4s/modules/webos/lgnc"
+    echo "" > "third-party/ss4s/modules/webos/lgnc/CMakeLists.txt"
+
 
 cmake -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
@@ -595,7 +599,7 @@ cmake -B "$BUILD_DIR" \
     -DSS4S_ENABLE_SAMPLES=OFF \
     -DSS4S_COMPILE_CHECK_STRICT=OFF \
     -DSS4S_MODULE_DISABLE_NDL_ESPLAYER=ON \
-    -DSS4S_MODULE_DISABLE_NDL_WEBOS4=OFF \
+    -DSS4S_MODULE_DISABLE_NDL_WEBOS4=ON \
     -DSS4S_MODULE_DISABLE_NDL_WEBOS5=OFF
 
 echo ""

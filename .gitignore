@@ -1,11 +1,9 @@
 build-webos/
 cmake/
 third-party/
-*.ipk
 *.o
 *.a
 *.log
 /tmp/
-dist/
 build.bat
 *docker*

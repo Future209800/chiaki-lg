@@ -257,13 +257,22 @@ static void apply_abs_event(ChiakiControllerState *st, GamepadDev *pad,
     switch (code) {
     case ABS_X:    st->left_x  = normalize_axis(val, min, max); break;
     case ABS_Y:    st->left_y  = normalize_axis(val, min, max); break;
-    // Right stick — standard mapping (DualSense / DualShock via hid-sony)
+    
+    // Right stick — standard mapping (DualSense / DualShock / standard XInput)
     case ABS_RX:   st->right_x = normalize_axis(val, min, max); break;
     case ABS_RY:   st->right_y = normalize_axis(val, min, max); break;
-    // Right stick — Xbox Wireless via webOS HID driver uses ABS_Z/ABS_RZ for sticks
-    case ABS_Z:    st->right_x = normalize_axis(val, min, max); break;
-    case ABS_RZ:   st->right_y = normalize_axis(val, min, max); break;
-    // Triggers — Xbox Wireless via webOS HID uses ABS_GAS/ABS_BRAKE (range 0-1023)
+
+    // Triggers — XInput standard (Mayflash and wired Xinput controllers)
+    case ABS_Z:    /* Axis 2 = L2 standard trigger */
+        if (max > min)
+            st->l2_state = (uint8_t)(((int64_t)(val - min) * 255) / (max - min));
+        break;
+    case ABS_RZ:   /* Axis 5 = R2 standard trigger */
+        if (max > min)
+            st->r2_state = (uint8_t)(((int64_t)(val - min) * 255) / (max - min));
+        break;
+
+    // Triggers — Fallback for native webOS driver
     case 9:  /* ABS_GAS   — R2 (swapped on webOS HID driver) */
         if (max > min)
             st->r2_state = (uint8_t)(((int64_t)(val - min) * 255) / (max - min));
@@ -272,6 +281,7 @@ static void apply_abs_event(ChiakiControllerState *st, GamepadDev *pad,
         if (max > min)
             st->l2_state = (uint8_t)(((int64_t)(val - min) * 255) / (max - min));
         break;
+
     case ABS_HAT0X:
         st->buttons &= ~(CHIAKI_CONTROLLER_BUTTON_DPAD_LEFT |
                          CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT);
@@ -287,6 +297,7 @@ static void apply_abs_event(ChiakiControllerState *st, GamepadDev *pad,
     default: break;
     }
 }
+
 
 // ── Evdev reader thread ────────────────────────────────────────────────────────
 static void *evdev_reader(void *arg)
